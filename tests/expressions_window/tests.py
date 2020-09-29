@@ -1,13 +1,13 @@
 import datetime
-from unittest import mock, skipIf, skipUnless
+from decimal import Decimal
+from unittest import mock, skipIf
 
 from django.core.exceptions import FieldError
 from django.db import NotSupportedError, connection
 from django.db.models import (
-    F, Func, OuterRef, Q, RowRange, Subquery, Value, ValueRange, Window,
-    WindowFrame,
+    Avg, BooleanField, Case, F, Func, Max, Min, OuterRef, Q, RowRange,
+    Subquery, Sum, Value, ValueRange, When, Window, WindowFrame,
 )
-from django.db.models.aggregates import Avg, Max, Min, Sum
 from django.db.models.functions import (
     CumeDist, DenseRank, ExtractYear, FirstValue, Lag, LastValue, Lead,
     NthValue, Ntile, PercentRank, Rank, RowNumber, Upper,
@@ -22,7 +22,14 @@ class WindowFunctionTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         Employee.objects.bulk_create([
-            Employee(name=e[0], salary=e[1], department=e[2], hire_date=e[3], age=e[4])
+            Employee(
+                name=e[0],
+                salary=e[1],
+                department=e[2],
+                hire_date=e[3],
+                age=e[4],
+                bonus=Decimal(e[1]) / 400,
+            )
             for e in [
                 ('Jones', 45000, 'Accounting', datetime.datetime(2005, 11, 1), 20),
                 ('Williams', 37000, 'Accounting', datetime.datetime(2009, 6, 1), 20),
@@ -202,6 +209,27 @@ class WindowFunctionTests(TestCase):
             ('Brown', 53000, 'Sales', None),
             ('Smith', 55000, 'Sales', 53000),
         ], transform=lambda row: (row.name, row.salary, row.department, row.lag))
+
+    def test_lag_decimalfield(self):
+        qs = Employee.objects.annotate(lag=Window(
+            expression=Lag(expression='bonus', offset=1),
+            partition_by=F('department'),
+            order_by=[F('bonus').asc(), F('name').asc()],
+        )).order_by('department', F('bonus').asc(), F('name').asc())
+        self.assertQuerysetEqual(qs, [
+            ('Williams', 92.5, 'Accounting', None),
+            ('Jenson', 112.5, 'Accounting', 92.5),
+            ('Jones', 112.5, 'Accounting', 112.5),
+            ('Adams', 125, 'Accounting', 112.5),
+            ('Moore', 85, 'IT', None),
+            ('Wilkinson', 150, 'IT', 85),
+            ('Johnson', 200, 'Management', None),
+            ('Miller', 250, 'Management', 200),
+            ('Smith', 95, 'Marketing', None),
+            ('Johnson', 100, 'Marketing', 95),
+            ('Brown', 132.5, 'Sales', None),
+            ('Smith', 137.5, 'Sales', 132.5),
+        ], transform=lambda row: (row.name, row.bonus, row.department, row.lag))
 
     def test_first_value(self):
         qs = Employee.objects.annotate(first_value=Window(
@@ -537,6 +565,14 @@ class WindowFunctionTests(TestCase):
             ('Brown', 53000, 'Sales', datetime.date(2009, 9, 1), 108000),
         ], transform=lambda row: (row.name, row.salary, row.department, row.hire_date, row.sum))
 
+    def test_related_ordering_with_count(self):
+        qs = Employee.objects.annotate(department_sum=Window(
+            expression=Sum('salary'),
+            partition_by=F('department'),
+            order_by=['classification__code'],
+        ))
+        self.assertEqual(qs.count(), 12)
+
     @skipUnlessDBFeature('supports_frame_range_fixed_distance')
     def test_range_n_preceding_and_following(self):
         qs = Employee.objects.annotate(sum=Window(
@@ -750,9 +786,9 @@ class WindowFunctionTests(TestCase):
                 frame=RowRange(end='a'),
             )))
 
-    @skipUnless(connection.vendor == 'postgresql', 'Frame construction not allowed on PostgreSQL')
-    def test_postgresql_illegal_range_frame_start(self):
-        msg = 'PostgreSQL only supports UNBOUNDED together with PRECEDING and FOLLOWING.'
+    @skipUnlessDBFeature('only_supports_unbounded_with_preceding_and_following')
+    def test_unsupported_range_frame_start(self):
+        msg = '%s only supports UNBOUNDED together with PRECEDING and FOLLOWING.' % connection.display_name
         with self.assertRaisesMessage(NotSupportedError, msg):
             list(Employee.objects.annotate(test=Window(
                 expression=Sum('salary'),
@@ -760,9 +796,9 @@ class WindowFunctionTests(TestCase):
                 frame=ValueRange(start=-1),
             )))
 
-    @skipUnless(connection.vendor == 'postgresql', 'Frame construction not allowed on PostgreSQL')
-    def test_postgresql_illegal_range_frame_end(self):
-        msg = 'PostgreSQL only supports UNBOUNDED together with PRECEDING and FOLLOWING.'
+    @skipUnlessDBFeature('only_supports_unbounded_with_preceding_and_following')
+    def test_unsupported_range_frame_end(self):
+        msg = '%s only supports UNBOUNDED together with PRECEDING and FOLLOWING.' % connection.display_name
         with self.assertRaisesMessage(NotSupportedError, msg):
             list(Employee.objects.annotate(test=Window(
                 expression=Sum('salary'),
@@ -845,6 +881,22 @@ class NonQueryWindowTests(SimpleTestCase):
             qs.filter(id=Func('dense_rank', 2, function='div'))
         with self.assertRaisesMessage(NotSupportedError, msg):
             qs.annotate(total=Sum('dense_rank', filter=Q(name='Jones'))).filter(total=1)
+
+    def test_conditional_annotation(self):
+        qs = Employee.objects.annotate(
+            dense_rank=Window(expression=DenseRank()),
+        ).annotate(
+            equal=Case(
+                When(id=F('dense_rank'), then=Value(True)),
+                default=Value(False),
+                output_field=BooleanField(),
+            ),
+        )
+        # The SQL standard disallows referencing window functions in the WHERE
+        # clause.
+        msg = 'Window is disallowed in the filter clause'
+        with self.assertRaisesMessage(NotSupportedError, msg):
+            qs.filter(equal=True)
 
     def test_invalid_order_by(self):
         msg = 'order_by must be either an Expression or a sequence of expressions'

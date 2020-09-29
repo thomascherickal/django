@@ -44,6 +44,16 @@ class TestCharField(TestCase):
         self.assertEqual(p2.title, Event.C)
 
 
+class TestMethods(SimpleTestCase):
+    def test_deconstruct(self):
+        field = models.CharField()
+        *_, kwargs = field.deconstruct()
+        self.assertEqual(kwargs, {})
+        field = models.CharField(db_collation='utf8_esperanto_ci')
+        *_, kwargs = field.deconstruct()
+        self.assertEqual(kwargs, {'db_collation': 'utf8_esperanto_ci'})
+
+
 class ValidationTests(SimpleTestCase):
 
     class Choices(models.TextChoices):
@@ -51,7 +61,8 @@ class ValidationTests(SimpleTestCase):
 
     def test_charfield_raises_error_on_empty_string(self):
         f = models.CharField()
-        with self.assertRaises(ValidationError):
+        msg = 'This field cannot be blank.'
+        with self.assertRaisesMessage(ValidationError, msg):
             f.clean('', None)
 
     def test_charfield_cleans_empty_string_when_blank_true(self):
@@ -64,7 +75,8 @@ class ValidationTests(SimpleTestCase):
 
     def test_charfield_with_choices_raises_error_on_invalid_choice(self):
         f = models.CharField(choices=[('a', 'A'), ('b', 'B')])
-        with self.assertRaises(ValidationError):
+        msg = "Value 'not a' is not a valid choice."
+        with self.assertRaisesMessage(ValidationError, msg):
             f.clean('not a', None)
 
     def test_enum_choices_cleans_valid_string(self):
@@ -73,10 +85,12 @@ class ValidationTests(SimpleTestCase):
 
     def test_enum_choices_invalid_input(self):
         f = models.CharField(choices=self.Choices.choices, max_length=1)
-        with self.assertRaises(ValidationError):
+        msg = "Value 'a' is not a valid choice."
+        with self.assertRaisesMessage(ValidationError, msg):
             f.clean('a', None)
 
     def test_charfield_raises_error_on_empty_input(self):
         f = models.CharField(null=False)
-        with self.assertRaises(ValidationError):
+        msg = 'This field cannot be null.'
+        with self.assertRaisesMessage(ValidationError, msg):
             f.clean(None, None)

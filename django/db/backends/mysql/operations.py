@@ -3,7 +3,6 @@ import uuid
 from django.conf import settings
 from django.db.backends.base.operations import BaseDatabaseOperations
 from django.utils import timezone
-from django.utils.duration import duration_microseconds
 from django.utils.encoding import force_str
 
 
@@ -30,6 +29,7 @@ class DatabaseOperations(BaseDatabaseOperations):
         'PositiveBigIntegerField': 'unsigned integer',
         'PositiveIntegerField': 'unsigned integer',
         'PositiveSmallIntegerField': 'unsigned integer',
+        'DurationField': 'signed integer',
     }
     cast_char_field_without_max_length = 'char'
     explain_prefix = 'EXPLAIN'
@@ -140,8 +140,12 @@ class DatabaseOperations(BaseDatabaseOperations):
         else:
             return "TIME(%s)" % (field_name)
 
-    def date_interval_sql(self, timedelta):
-        return 'INTERVAL %s MICROSECOND' % duration_microseconds(timedelta)
+    def fetch_returned_insert_rows(self, cursor):
+        """
+        Given a cursor object that has just performed an INSERT...RETURNING
+        statement into a table, return the tuple of returned data.
+        """
+        return cursor.fetchall()
 
     def format_for_duration_arithmetic(self, sql):
         return 'INTERVAL %s MICROSECOND' % sql
@@ -173,26 +177,60 @@ class DatabaseOperations(BaseDatabaseOperations):
     def random_function_sql(self):
         return 'RAND()'
 
-    def sql_flush(self, style, tables, sequences, allow_cascade=False):
-        # NB: The generated SQL below is specific to MySQL
-        # 'TRUNCATE x;', 'TRUNCATE y;', 'TRUNCATE z;'... style SQL statements
-        # to clear all tables of all data
-        if tables:
-            sql = ['SET FOREIGN_KEY_CHECKS = 0;']
-            for table in tables:
-                sql.append('%s %s;' % (
-                    style.SQL_KEYWORD('TRUNCATE'),
-                    style.SQL_FIELD(self.quote_name(table)),
-                ))
-            sql.append('SET FOREIGN_KEY_CHECKS = 1;')
-            sql.extend(self.sequence_reset_by_name_sql(style, sequences))
-            return sql
-        else:
+    def return_insert_columns(self, fields):
+        # MySQL and MariaDB < 10.5.0 don't support an INSERT...RETURNING
+        # statement.
+        if not fields:
+            return '', ()
+        columns = [
+            '%s.%s' % (
+                self.quote_name(field.model._meta.db_table),
+                self.quote_name(field.column),
+            ) for field in fields
+        ]
+        return 'RETURNING %s' % ', '.join(columns), ()
+
+    def sql_flush(self, style, tables, *, reset_sequences=False, allow_cascade=False):
+        if not tables:
             return []
 
+        sql = ['SET FOREIGN_KEY_CHECKS = 0;']
+        if reset_sequences:
+            # It's faster to TRUNCATE tables that require a sequence reset
+            # since ALTER TABLE AUTO_INCREMENT is slower than TRUNCATE.
+            sql.extend(
+                '%s %s;' % (
+                    style.SQL_KEYWORD('TRUNCATE'),
+                    style.SQL_FIELD(self.quote_name(table_name)),
+                ) for table_name in tables
+            )
+        else:
+            # Otherwise issue a simple DELETE since it's faster than TRUNCATE
+            # and preserves sequences.
+            sql.extend(
+                '%s %s %s;' % (
+                    style.SQL_KEYWORD('DELETE'),
+                    style.SQL_KEYWORD('FROM'),
+                    style.SQL_FIELD(self.quote_name(table_name)),
+                ) for table_name in tables
+            )
+        sql.append('SET FOREIGN_KEY_CHECKS = 1;')
+        return sql
+
+    def sequence_reset_by_name_sql(self, style, sequences):
+        return [
+            '%s %s %s %s = 1;' % (
+                style.SQL_KEYWORD('ALTER'),
+                style.SQL_KEYWORD('TABLE'),
+                style.SQL_FIELD(self.quote_name(sequence_info['table'])),
+                style.SQL_FIELD('AUTO_INCREMENT'),
+            ) for sequence_info in sequences
+        ]
+
     def validate_autopk_value(self, value):
-        # MySQLism: zero in AUTO_INCREMENT field does not work. Refs #17653.
-        if value == 0:
+        # Zero in AUTO_INCREMENT field does not work without the
+        # NO_AUTO_VALUE_ON_ZERO SQL mode.
+        if value == 0 and not self.connection.features.allows_auto_pk_0:
             raise ValueError('The database backend does not accept 0 as a '
                              'value for AutoField.')
         return value
@@ -230,6 +268,9 @@ class DatabaseOperations(BaseDatabaseOperations):
     def max_name_length(self):
         return 64
 
+    def pk_default_value(self):
+        return 'NULL'
+
     def bulk_insert_sql(self, fields, placeholder_rows):
         placeholder_rows_sql = (", ".join(row) for row in placeholder_rows)
         values_sql = ", ".join("(%s)" % sql for sql in placeholder_rows_sql)
@@ -240,7 +281,8 @@ class DatabaseOperations(BaseDatabaseOperations):
             return 'POW(%s)' % ','.join(sub_expressions)
         # Convert the result to a signed integer since MySQL's binary operators
         # return an unsigned integer.
-        elif connector in ('&', '|', '<<'):
+        elif connector in ('&', '|', '<<', '#'):
+            connector = '^' if connector == '#' else connector
             return 'CONVERT(%s, SIGNED)' % connector.join(sub_expressions)
         elif connector == '>>':
             lhs, rhs = sub_expressions
@@ -286,13 +328,13 @@ class DatabaseOperations(BaseDatabaseOperations):
                 # a decimal. MySQL returns an integer without microseconds.
                 return 'CAST((TIME_TO_SEC(%(lhs)s) - TIME_TO_SEC(%(rhs)s)) * 1000000 AS SIGNED)' % {
                     'lhs': lhs_sql, 'rhs': rhs_sql
-                }, lhs_params + rhs_params
+                }, (*lhs_params, *rhs_params)
             return (
                 "((TIME_TO_SEC(%(lhs)s) * 1000000 + MICROSECOND(%(lhs)s)) -"
                 " (TIME_TO_SEC(%(rhs)s) * 1000000 + MICROSECOND(%(rhs)s)))"
-            ) % {'lhs': lhs_sql, 'rhs': rhs_sql}, lhs_params * 2 + rhs_params * 2
-        else:
-            return "TIMESTAMPDIFF(MICROSECOND, %s, %s)" % (rhs_sql, lhs_sql), rhs_params + lhs_params
+            ) % {'lhs': lhs_sql, 'rhs': rhs_sql}, tuple(lhs_params) * 2 + tuple(rhs_params) * 2
+        params = (*rhs_params, *lhs_params)
+        return "TIMESTAMPDIFF(MICROSECOND, %s, %s)" % (rhs_sql, lhs_sql), params
 
     def explain_query_prefix(self, format=None, **options):
         # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.
@@ -309,14 +351,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         if format and not (analyze and not self.connection.mysql_is_mariadb):
             # Only MariaDB supports the analyze option with formats.
             prefix += ' FORMAT=%s' % format
-        if self.connection.features.needs_explain_extended and not analyze and format is None:
-            # ANALYZE, EXTENDED, and FORMAT are mutually exclusive options.
-            prefix += ' EXTENDED'
         return prefix
 
     def regex_lookup(self, lookup_type):
         # REGEXP BINARY doesn't work correctly in MySQL 8+ and REGEXP_LIKE
-        # doesn't exist in MySQL 5.6 or in MariaDB.
+        # doesn't exist in MySQL 5.x or in MariaDB.
         if self.connection.mysql_version < (8, 0, 0) or self.connection.mysql_is_mariadb:
             if lookup_type == 'regex':
                 return '%s REGEXP BINARY %s'
@@ -327,3 +366,13 @@ class DatabaseOperations(BaseDatabaseOperations):
 
     def insert_statement(self, ignore_conflicts=False):
         return 'INSERT IGNORE INTO' if ignore_conflicts else super().insert_statement(ignore_conflicts)
+
+    def lookup_cast(self, lookup_type, internal_type=None):
+        lookup = '%s'
+        if internal_type == 'JSONField':
+            if self.connection.mysql_is_mariadb or lookup_type in (
+                'iexact', 'contains', 'icontains', 'startswith', 'istartswith',
+                'endswith', 'iendswith', 'regex', 'iregex',
+            ):
+                lookup = 'JSON_UNQUOTE(%s)'
+        return lookup

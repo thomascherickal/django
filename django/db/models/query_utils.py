@@ -100,7 +100,10 @@ class Q(tree.Node):
     def resolve_expression(self, query=None, allow_joins=True, reuse=None, summarize=False, for_save=False):
         # We must promote any new joins to left outer joins so that when Q is
         # used as an expression, rows aren't filtered due to joins.
-        clause, joins = query._add_q(self, reuse, allow_joins=allow_joins, split_subq=False)
+        clause, joins = query._add_q(
+            self, reuse, allow_joins=allow_joins, split_subq=False,
+            check_filterable=False,
+        )
         query.promote_joins(joins)
         return clause
 
@@ -138,14 +141,14 @@ class DeferredAttribute:
             return self
         data = instance.__dict__
         field_name = self.field.attname
-        if data.get(field_name, self) is self:
+        if field_name not in data:
             # Let's see if the field is part of the parent chain. If so we
             # might be able to reuse the already loaded value. Refs #18343.
             val = self._check_parent_chain(instance)
             if val is None:
                 instance.refresh_from_db(fields=[field_name])
-                val = getattr(instance, field_name)
-            data[field_name] = val
+            else:
+                data[field_name] = val
         return data[field_name]
 
     def _check_parent_chain(self, instance):

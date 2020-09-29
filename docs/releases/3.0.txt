@@ -1,8 +1,8 @@
-============================================
-Django 3.0 release notes - UNDER DEVELOPMENT
-============================================
+========================
+Django 3.0 release notes
+========================
 
-*Expected December 2019*
+*December 2, 2019*
 
 Welcome to Django 3.0!
 
@@ -53,6 +53,11 @@ support for running as an `ASGI <https://asgi.readthedocs.io/>`_ application.
 This is in addition to our existing WSGI support. Django intends to support
 both for the foreseeable future. Async features will only be available to
 applications that run under ASGI, however.
+
+At this stage async support only applies to the outer ASGI application.
+Internally everything remains synchronous. Asynchronous middleware, views, etc.
+are not yet supported. You can, however, use ASGI middleware around Django's
+application, allowing you to combine Django with other ASGI frameworks.
 
 There is no need to switch your applications over unless you want to start
 experimenting with asynchronous code, but we have
@@ -318,7 +323,7 @@ Requests and Responses
   :class:`memoryview` content.
 
 * For use in, for example, Django templates, :attr:`.HttpRequest.headers` now
-  allows look ups using underscores (e.g. ``user_agent``) in place of hyphens.
+  allows lookups using underscores (e.g. ``user_agent``) in place of hyphens.
 
 .. _whats-new-security-3.0:
 
@@ -327,12 +332,11 @@ Security
 
 * :setting:`X_FRAME_OPTIONS` now defaults to ``'DENY'``. In older versions, the
   :setting:`X_FRAME_OPTIONS` setting defaults to ``'SAMEORIGIN'``. If your site
-  uses frames of itself, you will need to explicitly set ``X_FRAME_ORIGINS =
+  uses frames of itself, you will need to explicitly set ``X_FRAME_OPTIONS =
   'SAMEORIGIN'`` for them to continue working.
 
-* :setting:`SECURE_CONTENT_TYPE_NOSNIFF` setting now defaults to ``True``. With
-  the enabled :setting:`SECURE_CONTENT_TYPE_NOSNIFF`, the
-  :class:`~django.middleware.security.SecurityMiddleware` sets the
+* :setting:`SECURE_CONTENT_TYPE_NOSNIFF` now defaults to ``True``. With this
+  enabled, :class:`~django.middleware.security.SecurityMiddleware` sets the
   :ref:`x-content-type-options` header on all responses that do not already
   have it.
 
@@ -371,6 +375,27 @@ Tests
 
 Backwards incompatible changes in 3.0
 =====================================
+
+``Model.save()`` when providing a default for the primary key
+-------------------------------------------------------------
+
+:meth:`.Model.save` no longer attempts to find a row when saving a new
+``Model`` instance and a default value for the primary key is provided, and
+always performs a single ``INSERT`` query. In older Django versions,
+``Model.save()`` performed either an ``INSERT`` or an ``UPDATE`` based on
+whether or not the row exists.
+
+This makes calling ``Model.save()`` while providing a default primary key value
+equivalent to passing :ref:`force_insert=True <ref-models-force-insert>` to
+model's ``save()``. Attempts to use a new ``Model`` instance to update an
+existing row will result in an ``IntegrityError``.
+
+In order to update an existing model for a specific primary key value, use the
+:meth:`~django.db.models.query.QuerySet.update_or_create` method or
+``QuerySet.filter(pk=…).update(…)`` instead. For example::
+
+    >>> MyModel.objects.update_or_create(pk=existing_pk, defaults={'name': 'new name'})
+    >>> MyModel.objects.filter(pk=existing_pk).update(name='new name')
 
 Database backend API
 --------------------
@@ -488,7 +513,7 @@ In older versions, the :setting:`FILE_UPLOAD_PERMISSIONS` setting defaults to
 uploaded files having different permissions depending on their size and which
 upload handler is used.
 
-``FILE_UPLOAD_PERMISSION`` now defaults to ``0o644`` to avoid this
+``FILE_UPLOAD_PERMISSIONS`` now defaults to ``0o644`` to avoid this
 inconsistency.
 
 New default values for security settings
@@ -508,7 +533,7 @@ Miscellaneous
 -------------
 
 * ``ContentType.__str__()`` now includes the model's ``app_label`` to
-  disambiguate model's with the same name in different apps.
+  disambiguate models with the same name in different apps.
 
 * Because accessing the language in the session rather than in the cookie is
   deprecated, ``LocaleMiddleware`` no longer looks for the user's language in
@@ -546,7 +571,9 @@ Miscellaneous
 * ``alias=None`` is added to the signature of
   :meth:`.Expression.get_group_by_cols`.
 
-* Support for ``sqlparse`` < 0.2.2 is removed.
+* ``RegexPattern``, used by :func:`~django.urls.re_path`, no longer returns
+  keyword arguments with ``None`` values to be passed to the view for the
+  optional named groups that are missing.
 
 .. _deprecated-features-3.0:
 

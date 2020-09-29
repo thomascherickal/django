@@ -221,7 +221,7 @@ class Field(RegisterLookupMixin):
         elif LOOKUP_SEP in self.name:
             return [
                 checks.Error(
-                    'Field names must not contain "%s".' % (LOOKUP_SEP,),
+                    'Field names must not contain "%s".' % LOOKUP_SEP,
                     obj=self,
                     id='fields.E002',
                 )
@@ -269,10 +269,10 @@ class Field(RegisterLookupMixin):
                 ):
                     break
                 if self.max_length is not None and group_choices:
-                    choice_max_length = max(
+                    choice_max_length = max([
                         choice_max_length,
                         *(len(value) for value, _ in group_choices if isinstance(value, str)),
-                    )
+                    ])
             except (TypeError, ValueError):
                 # No groups, choices in the form [value, display]
                 value, human_name = group_name, group_choices
@@ -335,12 +335,15 @@ class Field(RegisterLookupMixin):
         else:
             return []
 
-    def _check_backend_specific_checks(self, **kwargs):
+    def _check_backend_specific_checks(self, databases=None, **kwargs):
+        if databases is None:
+            return []
         app_label = self.model._meta.app_label
-        for db in connections:
-            if router.allow_migrate(db, app_label, model_name=self.model._meta.model_name):
-                return connections[db].validation.check_field(self, **kwargs)
-        return []
+        errors = []
+        for alias in databases:
+            if router.allow_migrate(alias, app_label, model_name=self.model._meta.model_name):
+                errors.extend(connections[alias].validation.check_field(self, **kwargs))
+        return errors
 
     def _check_validators(self):
         errors = []
@@ -493,6 +496,8 @@ class Field(RegisterLookupMixin):
             path = path.replace("django.db.models.fields.related", "django.db.models")
         elif path.startswith("django.db.models.fields.files"):
             path = path.replace("django.db.models.fields.files", "django.db.models")
+        elif path.startswith('django.db.models.fields.json'):
+            path = path.replace('django.db.models.fields.json', 'django.db.models')
         elif path.startswith("django.db.models.fields.proxy"):
             path = path.replace("django.db.models.fields.proxy", "django.db.models")
         elif path.startswith("django.db.models.fields"):
@@ -511,17 +516,37 @@ class Field(RegisterLookupMixin):
     def __eq__(self, other):
         # Needed for @total_ordering
         if isinstance(other, Field):
-            return self.creation_counter == other.creation_counter
+            return (
+                self.creation_counter == other.creation_counter and
+                getattr(self, 'model', None) == getattr(other, 'model', None)
+            )
         return NotImplemented
 
     def __lt__(self, other):
         # This is needed because bisect does not take a comparison function.
+        # Order by creation_counter first for backward compatibility.
         if isinstance(other, Field):
-            return self.creation_counter < other.creation_counter
+            if (
+                self.creation_counter != other.creation_counter or
+                not hasattr(self, 'model') and not hasattr(other, 'model')
+            ):
+                return self.creation_counter < other.creation_counter
+            elif hasattr(self, 'model') != hasattr(other, 'model'):
+                return not hasattr(self, 'model')  # Order no-model fields first
+            else:
+                # creation_counter's are equal, compare only models.
+                return (
+                    (self.model._meta.app_label, self.model._meta.model_name) <
+                    (other.model._meta.app_label, other.model._meta.model_name)
+                )
         return NotImplemented
 
     def __hash__(self):
-        return hash(self.creation_counter)
+        return hash((
+            self.creation_counter,
+            self.model._meta.app_label if hasattr(self, 'model') else None,
+            self.model._meta.model_name if hasattr(self, 'model') else None,
+        ))
 
     def __deepcopy__(self, memodict):
         # We don't have to deepcopy very much here, since most things are not
@@ -764,7 +789,11 @@ class Field(RegisterLookupMixin):
             if not getattr(cls, self.attname, None):
                 setattr(cls, self.attname, self.descriptor_class(self))
         if self.choices is not None:
-            if not hasattr(cls, 'get_%s_display' % self.name):
+            # Don't override a get_FOO_display() method defined explicitly on
+            # this class, but don't check methods derived from inheritance, to
+            # allow overriding inherited choices. For more complex inheritance
+            # structures users should override contribute_to_class().
+            if 'get_%s_display' % self.name not in cls.__dict__:
                 setattr(
                     cls,
                     'get_%s_display' % self.name,
@@ -973,13 +1002,16 @@ class BooleanField(Field):
 class CharField(Field):
     description = _("String (up to %(max_length)s)")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, db_collation=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.db_collation = db_collation
         self.validators.append(validators.MaxLengthValidator(self.max_length))
 
     def check(self, **kwargs):
+        databases = kwargs.get('databases') or []
         return [
             *super().check(**kwargs),
+            *self._check_db_collation(databases),
             *self._check_max_length_attribute(**kwargs),
         ]
 
@@ -1003,6 +1035,27 @@ class CharField(Field):
             ]
         else:
             return []
+
+    def _check_db_collation(self, databases):
+        errors = []
+        for db in databases:
+            if not router.allow_migrate_model(db, self.model):
+                continue
+            connection = connections[db]
+            if not (
+                self.db_collation is None or
+                'supports_collation_on_charfield' in self.model._meta.required_db_features or
+                connection.features.supports_collation_on_charfield
+            ):
+                errors.append(
+                    checks.Error(
+                        '%s does not support a database collation on '
+                        'CharFields.' % connection.display_name,
+                        obj=self,
+                        id='fields.E190',
+                    ),
+                )
+        return errors
 
     def cast_db_type(self, connection):
         if self.max_length is None:
@@ -1031,6 +1084,12 @@ class CharField(Field):
             defaults['empty_value'] = None
         defaults.update(kwargs)
         return super().formfield(**defaults)
+
+    def deconstruct(self):
+        name, path, args, kwargs = super().deconstruct()
+        if self.db_collation:
+            kwargs['db_collation'] = self.db_collation
+        return name, path, args, kwargs
 
 
 class CommaSeparatedIntegerField(CharField):
@@ -1492,7 +1551,7 @@ class DecimalField(Field):
             return self.context.create_decimal_from_float(value)
         try:
             return decimal.Decimal(value)
-        except decimal.InvalidOperation:
+        except (decimal.InvalidOperation, TypeError, ValueError):
             raise exceptions.ValidationError(
                 self.error_messages['invalid'],
                 code='invalid',
@@ -1922,6 +1981,14 @@ class NullBooleanField(BooleanField):
         'invalid_nullable': _('“%(value)s” value must be either None, True or False.'),
     }
     description = _("Boolean (Either True, False or None)")
+    system_check_deprecated_details = {
+        'msg': (
+            'NullBooleanField is deprecated. Support for it (except in '
+            'historical migrations) will be removed in Django 4.0.'
+        ),
+        'hint': 'Use BooleanField(null=True) instead.',
+        'id': 'fields.W903',
+    }
 
     def __init__(self, *args, **kwargs):
         kwargs['null'] = True
@@ -2037,6 +2104,38 @@ class SmallIntegerField(IntegerField):
 class TextField(Field):
     description = _("Text")
 
+    def __init__(self, *args, db_collation=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.db_collation = db_collation
+
+    def check(self, **kwargs):
+        databases = kwargs.get('databases') or []
+        return [
+            *super().check(**kwargs),
+            *self._check_db_collation(databases),
+        ]
+
+    def _check_db_collation(self, databases):
+        errors = []
+        for db in databases:
+            if not router.allow_migrate_model(db, self.model):
+                continue
+            connection = connections[db]
+            if not (
+                self.db_collation is None or
+                'supports_collation_on_textfield' in self.model._meta.required_db_features or
+                connection.features.supports_collation_on_textfield
+            ):
+                errors.append(
+                    checks.Error(
+                        '%s does not support a database collation on '
+                        'TextFields.' % connection.display_name,
+                        obj=self,
+                        id='fields.E190',
+                    ),
+                )
+        return errors
+
     def get_internal_type(self):
         return "TextField"
 
@@ -2058,6 +2157,12 @@ class TextField(Field):
             **({} if self.choices is not None else {'widget': forms.Textarea}),
             **kwargs,
         })
+
+    def deconstruct(self):
+        name, path, args, kwargs = super().deconstruct()
+        if self.db_collation:
+            kwargs['db_collation'] = self.db_collation
+        return name, path, args, kwargs
 
 
 class TimeField(DateTimeCheckMixin, Field):

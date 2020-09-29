@@ -90,7 +90,7 @@ list, the :meth:`django.http.HttpRequest.get_host()` method will raise
 :exc:`~django.core.exceptions.SuspiciousOperation`.
 
 When :setting:`DEBUG` is ``True`` and ``ALLOWED_HOSTS`` is empty, the host
-is validated against ``['localhost', '127.0.0.1', '[::1]']``.
+is validated against ``['.localhost', '127.0.0.1', '[::1]']``.
 
 ``ALLOWED_HOSTS`` is also :ref:`checked when running tests
 <topics-testing-advanced-multiple-hosts>`.
@@ -98,6 +98,11 @@ is validated against ``['localhost', '127.0.0.1', '[::1]']``.
 This validation only applies via :meth:`~django.http.HttpRequest.get_host()`;
 if your code accesses the ``Host`` header directly from ``request.META`` you
 are bypassing this security protection.
+
+.. versionchanged:: 3.1
+
+    If ``ALLOWED_HOSTS`` is empty and ``DEBUG=True``, subdomains of localhost
+    were allowed.
 
 .. setting:: APPEND_SLASH
 
@@ -153,10 +158,15 @@ The cache backend to use. The built-in cache backends are:
 * ``'django.core.cache.backends.locmem.LocMemCache'``
 * ``'django.core.cache.backends.memcached.MemcachedCache'``
 * ``'django.core.cache.backends.memcached.PyLibMCCache'``
+* ``'django.core.cache.backends.memcached.PyMemcacheCache'``
 
 You can use a cache backend that doesn't ship with Django by setting
 :setting:`BACKEND <CACHES-BACKEND>` to a fully-qualified path of a cache
 backend class (i.e. ``mypackage.backends.whatever.WhateverCache``).
+
+.. versionchanged:: 3.2
+
+    The ``PyMemcacheCache`` backend was added.
 
 .. setting:: CACHES-KEY_FUNCTION
 
@@ -246,7 +256,7 @@ See the :ref:`cache documentation <cache_versioning>` for more information.
 ``CACHE_MIDDLEWARE_ALIAS``
 --------------------------
 
-Default: ``default``
+Default: ``'default'``
 
 The cache connection to use for the :ref:`cache middleware
 <the-per-site-cache>`.
@@ -377,6 +387,10 @@ The value of the `SameSite`_ flag on the CSRF cookie. This flag prevents the
 cookie from being sent in cross-site requests.
 
 See :setting:`SESSION_COOKIE_SAMESITE` for details about ``SameSite``.
+
+.. versionchanged:: 3.1
+
+    Setting ``CSRF_COOKIE_SAMESITE = 'None'`` was allowed.
 
 .. setting:: CSRF_COOKIE_SECURE
 
@@ -588,9 +602,9 @@ file. When specifying the path, always use forward slashes, even on Windows
 
 Default: ``0``
 
-The lifetime of a database connection, in seconds. Use ``0`` to close database
-connections at the end of each request — Django's historical behavior — and
-``None`` for unlimited persistent connections.
+The lifetime of a database connection, as an integer of seconds. Use ``0`` to
+close database connections at the end of each request — Django's historical
+behavior — and ``None`` for unlimited persistent connections.
 
 .. setting:: OPTIONS
 
@@ -632,23 +646,52 @@ default port. Not used with SQLite.
 
 Default: ``None``
 
-A string representing the time zone for datetimes stored in this database
-(assuming that it doesn't support time zones) or ``None``. This inner option of
-the :setting:`DATABASES` setting accepts the same values as the general
-:setting:`TIME_ZONE` setting.
+A string representing the time zone for this database connection or ``None``.
+This inner option of the :setting:`DATABASES` setting accepts the same values
+as the general :setting:`TIME_ZONE` setting.
 
-This allows interacting with third-party databases that store datetimes in
-local time rather than UTC. To avoid issues around DST changes, you shouldn't
-set this option for databases managed by Django.
-
-When :setting:`USE_TZ` is ``True`` and the database doesn't support time zones
-(e.g. SQLite, MySQL, Oracle), Django reads and writes datetimes in local time
-according to this option if it is set and in UTC if it isn't.
-
-When :setting:`USE_TZ` is ``True`` and the database supports time zones (e.g.
-PostgreSQL), it is an error to set this option.
-
+When :setting:`USE_TZ` is ``True`` and this option is set, reading datetimes
+from the database returns aware datetimes in this time zone instead of UTC.
 When :setting:`USE_TZ` is ``False``, it is an error to set this option.
+
+* If the database backend doesn't support time zones (e.g. SQLite, MySQL,
+  Oracle), Django reads and writes datetimes in local time according to this
+  option if it is set and in UTC if it isn't.
+
+  Changing the connection time zone changes how datetimes are read from and
+  written to the database.
+
+  * If Django manages the database and you don't have a strong reason to do
+    otherwise, you should leave this option unset. It's best to store datetimes
+    in UTC because it avoids ambiguous or nonexistent datetimes during daylight
+    saving time changes. Also, receiving datetimes in UTC keeps datetime
+    arithmetic simple — there's no need for the ``normalize()`` method provided
+    by pytz.
+
+  * If you're connecting to a third-party database that stores datetimes in a
+    local time rather than UTC, then you must set this option to the
+    appropriate time zone. Likewise, if Django manages the database but
+    third-party systems connect to the same database and expect to find
+    datetimes in local time, then you must set this option.
+
+* If the database backend supports time zones (e.g. PostgreSQL), the
+  ``TIME_ZONE`` option is very rarely needed. It can be changed at any time;
+  the database takes care of converting datetimes to the desired time zone.
+
+  Setting the time zone of the database connection may be useful for running
+  raw SQL queries involving date/time functions provided by the database, such
+  as ``date_trunc``, because their results depend on the time zone.
+
+  However, this has a downside: receiving all datetimes in local time makes
+  datetime arithmetic more tricky — you must call the ``normalize()`` method
+  provided by pytz after each operation.
+
+  Consider converting to local time explicitly with ``AT TIME ZONE`` in raw SQL
+  queries instead of setting the ``TIME_ZONE`` option.
+
+.. versionchanged:: 3.1
+
+  Using this option when the database backend supports time zones was allowed.
 
 .. setting:: DATABASE-DISABLE_SERVER_SIDE_CURSORS
 
@@ -749,6 +792,8 @@ on :ref:`controlling the creation order of test databases
 Default: ``True``
 
 When set to ``False``, migrations won't run when creating the test database.
+This is similar to setting ``None`` as a value in :setting:`MIGRATION_MODULES`,
+but for all apps.
 
 .. setting:: TEST_MIRROR
 
@@ -1097,27 +1142,29 @@ Default::
         '%Y-%m-%d %H:%M:%S',     # '2006-10-25 14:30:59'
         '%Y-%m-%d %H:%M:%S.%f',  # '2006-10-25 14:30:59.000200'
         '%Y-%m-%d %H:%M',        # '2006-10-25 14:30'
-        '%Y-%m-%d',              # '2006-10-25'
         '%m/%d/%Y %H:%M:%S',     # '10/25/2006 14:30:59'
         '%m/%d/%Y %H:%M:%S.%f',  # '10/25/2006 14:30:59.000200'
         '%m/%d/%Y %H:%M',        # '10/25/2006 14:30'
-        '%m/%d/%Y',              # '10/25/2006'
         '%m/%d/%y %H:%M:%S',     # '10/25/06 14:30:59'
         '%m/%d/%y %H:%M:%S.%f',  # '10/25/06 14:30:59.000200'
         '%m/%d/%y %H:%M',        # '10/25/06 14:30'
-        '%m/%d/%y',              # '10/25/06'
     ]
 
 A list of formats that will be accepted when inputting data on a datetime
 field. Formats will be tried in order, using the first valid one. Note that
 these format strings use Python's :ref:`datetime module syntax
 <strftime-strptime-behavior>`, not the format strings from the :tfilter:`date`
-template filter.
+template filter. Date-only formats are not included as datetime fields will
+automatically try :setting:`DATE_INPUT_FORMATS` in last resort.
 
 When :setting:`USE_L10N` is ``True``, the locale-dictated format has higher
 precedence and will be applied instead.
 
 See also :setting:`DATE_INPUT_FORMATS` and :setting:`TIME_INPUT_FORMATS`.
+
+.. versionchanged:: 3.1
+
+    In older versions, the default is a list containing also date-only formats.
 
 .. setting:: DEBUG
 
@@ -1210,6 +1257,19 @@ Default: ``'utf-8'``
 Default charset to use for all ``HttpResponse`` objects, if a MIME type isn't
 manually specified. Used when constructing the ``Content-Type`` header.
 
+.. setting:: DEFAULT_EXCEPTION_REPORTER
+
+``DEFAULT_EXCEPTION_REPORTER``
+------------------------------
+
+.. versionadded:: 3.1
+
+Default: ``'``:class:`django.views.debug.ExceptionReporter`\ ``'``
+
+Default exception reporter class to be used if none has been assigned to the
+:class:`~django.http.HttpRequest` instance yet. See
+:ref:`custom-error-reports`.
+
 .. setting:: DEFAULT_EXCEPTION_REPORTER_FILTER
 
 ``DEFAULT_EXCEPTION_REPORTER_FILTER``
@@ -1241,6 +1301,27 @@ Default: ``'webmaster@localhost'``
 Default email address to use for various automated correspondence from the
 site manager(s). This doesn't include error messages sent to :setting:`ADMINS`
 and :setting:`MANAGERS`; for that, see :setting:`SERVER_EMAIL`.
+
+.. setting:: DEFAULT_HASHING_ALGORITHM
+
+``DEFAULT_HASHING_ALGORITHM``
+-----------------------------
+
+.. versionadded:: 3.1
+
+Default: ``'sha256'``
+
+Default hashing algorithm to use for encoding cookies, password reset tokens in
+the admin site, user sessions, and signatures created by
+:class:`django.core.signing.Signer` and :meth:`django.core.signing.dumps`.
+Algorithm must be ``'sha1'`` or ``'sha256'``. See
+:ref:`release notes <default-hashing-algorithm-usage>` for usage details.
+
+.. deprecated:: 3.1
+
+    This transitional setting is deprecated. Support for it and tokens,
+    cookies, sessions, and signatures that use SHA-1 hashing algorithm will be
+    removed in Django 4.0.
 
 .. setting:: DEFAULT_INDEX_TABLESPACE
 
@@ -1487,10 +1568,9 @@ The numeric mode (i.e. ``0o644``) to set newly uploaded files to. For
 more information about what these modes mean, see the documentation for
 :func:`os.chmod`.
 
-If this isn't given or is ``None``, you'll get operating-system
-dependent behavior. On most platforms, temporary files will have a mode
-of ``0o600``, and files saved from memory will be saved using the
-system's standard umask.
+If ``None``, you'll get operating-system dependent behavior. On most platforms,
+temporary files will have a mode of ``0o600``, and files saved from memory will
+be saved using the system's standard umask.
 
 For security reasons, these permissions aren't applied to the temporary files
 that are stored in :setting:`FILE_UPLOAD_TEMP_DIR`.
@@ -1501,16 +1581,12 @@ when using the :djadmin:`collectstatic` management command. See
 
 .. warning::
 
-    **Always prefix the mode with a 0.**
+    **Always prefix the mode with** ``0o`` **.**
 
-    If you're not familiar with file modes, please note that the leading
-    ``0`` is very important: it indicates an octal number, which is the
-    way that modes must be specified. If you try to use ``644``, you'll
-    get totally incorrect behavior.
-
-.. versionchanged:: 3.0
-
-    In older versions, the default value is ``None``.
+    If you're not familiar with file modes, please note that the ``0o`` prefix
+    is very important: it indicates an octal number, which is the way that
+    modes must be specified. If you try to use ``644``, you'll get totally
+    incorrect behavior.
 
 .. setting:: FILE_UPLOAD_TEMP_DIR
 
@@ -1770,8 +1846,6 @@ deletes the old one.
 ``LANGUAGE_COOKIE_HTTPONLY``
 ----------------------------
 
-.. versionadded:: 3.0
-
 Default: ``False``
 
 Whether to use ``HttpOnly`` flag on the language cookie. If this is set to
@@ -1819,8 +1893,6 @@ deletes the one.
 ``LANGUAGE_COOKIE_SAMESITE``
 ----------------------------
 
-.. versionadded:: 3.0
-
 Default: ``None``
 
 The value of the `SameSite`_ flag on the language cookie. This flag prevents the
@@ -1828,12 +1900,14 @@ cookie from being sent in cross-site requests.
 
 See :setting:`SESSION_COOKIE_SAMESITE` for details about ``SameSite``.
 
+.. versionchanged:: 3.1
+
+    Setting ``LANGUAGE_COOKIE_SAMESITE = 'None'`` was allowed.
+
 .. setting:: LANGUAGE_COOKIE_SECURE
 
 ``LANGUAGE_COOKIE_SECURE``
 --------------------------
-
-.. versionadded:: 3.0
 
 Default: ``False``
 
@@ -2206,10 +2280,6 @@ If ``True``, the :class:`~django.middleware.security.SecurityMiddleware`
 sets the :ref:`x-content-type-options` header on all responses that do not
 already have it.
 
-.. versionchanged:: 3.0
-
-    In older versions, the default value is ``False``.
-
 .. setting:: SECURE_HSTS_INCLUDE_SUBDOMAINS
 
 ``SECURE_HSTS_INCLUDE_SUBDOMAINS``
@@ -2336,13 +2406,15 @@ from URL paths, so patterns shouldn't include them, e.g.
 ``SECURE_REFERRER_POLICY``
 --------------------------
 
-.. versionadded:: 3.0
-
-Default: ``None``
+Default: ``'same-origin'``
 
 If configured, the :class:`~django.middleware.security.SecurityMiddleware` sets
 the :ref:`referrer-policy` header on all responses that do not already have it
 to the value provided.
+
+.. versionchanged:: 3.1
+
+    In older versions, the default value is ``None``.
 
 .. setting:: SECURE_SSL_HOST
 
@@ -2719,11 +2791,10 @@ See also :setting:`LANGUAGE_CODE`, :setting:`USE_I18N` and :setting:`USE_TZ`.
 Default: ``False``
 
 A boolean that specifies whether to display numbers using a thousand separator.
-When :setting:`USE_L10N` is set to ``True`` and if this is also set to
-``True``, Django will use the values of :setting:`THOUSAND_SEPARATOR` and
-:setting:`NUMBER_GROUPING` to format numbers unless the locale already has an
-existing thousands separator. If there is a thousands separator in the locale
-format, it will have higher precedence and will be applied instead.
+When set to ``True`` and :setting:`USE_L10N` is also ``True``, Django will
+format numbers using the :setting:`NUMBER_GROUPING` and
+:setting:`THOUSAND_SEPARATOR` settings. These settings may also be dictated by
+the locale, which takes precedence.
 
 See also :setting:`DECIMAL_SEPARATOR`, :setting:`NUMBER_GROUPING` and
 :setting:`THOUSAND_SEPARATOR`.
@@ -2737,7 +2808,10 @@ Default: ``False``
 
 A boolean that specifies if datetimes will be timezone-aware by default or not.
 If this is set to ``True``, Django will use timezone-aware datetimes internally.
-Otherwise, Django will use naive datetimes in local time.
+
+When ``USE_TZ`` is False, Django will use naive datetimes in local time, except
+when parsing ISO 8601 formatted strings, where timezone information will always
+be retained if present.
 
 See also :setting:`TIME_ZONE`, :setting:`USE_I18N` and :setting:`USE_L10N`.
 
@@ -2759,7 +2833,7 @@ preference to the ``Host`` header. This should only be enabled if a proxy
 which sets this header is in use.
 
 This setting takes priority over :setting:`USE_X_FORWARDED_PORT`. Per
-:rfc:`7239#page-7`, the ``X-Forwarded-Host`` header can include the port
+:rfc:`7239#section-5.3`, the ``X-Forwarded-Host`` header can include the port
 number, in which case you shouldn't use :setting:`USE_X_FORWARDED_PORT`.
 
 .. setting:: USE_X_FORWARDED_PORT
@@ -2825,10 +2899,6 @@ Default: ``'DENY'``
 The default value for the X-Frame-Options header used by
 :class:`~django.middleware.clickjacking.XFrameOptionsMiddleware`. See the
 :doc:`clickjacking protection </ref/clickjacking/>` documentation.
-
-.. versionchanged:: 3.0
-
-    In older versions, the default value is ``SAMEORIGIN``.
 
 Auth
 ====
@@ -2910,7 +2980,7 @@ rendered.
 
 Default: ``259200`` (3 days, in seconds)
 
-The minimum number of seconds a password reset link is valid for.
+The number of seconds a password reset link is valid for.
 
 Used by the :class:`~django.contrib.auth.views.PasswordResetConfirmView`.
 
@@ -2931,8 +3001,7 @@ Used by the :class:`~django.contrib.auth.views.PasswordResetConfirmView`.
 
 Default: ``3``
 
-The minimum number of days a password reset link is valid for. Depending on
-when the link is generated, it will be valid for up to a day longer.
+The number of days a password reset link is valid for.
 
 Used by the :class:`~django.contrib.auth.views.PasswordResetConfirmView`.
 
@@ -3108,15 +3177,15 @@ Whether to use ``HttpOnly`` flag on the session cookie. If this is set to
 cookie.
 
 HttpOnly_ is a flag included in a Set-Cookie HTTP response header. It's part of
-the :rfc:`6265` standard for cookies and can be a useful way to mitigate the
-risk of a client-side script accessing the protected cookie data.
+the :rfc:`6265#section-4.1.2.6` standard for cookies and can be a useful way to
+mitigate the risk of a client-side script accessing the protected cookie data.
 
 This makes it less trivial for an attacker to escalate a cross-site scripting
 vulnerability into full hijacking of a user's session. There aren't many good
 reasons for turning this off. Your code shouldn't read session cookies from
 JavaScript.
 
-.. _HttpOnly: https://www.owasp.org/index.php/HttpOnly
+.. _HttpOnly: https://owasp.org/www-community/HttpOnly
 
 .. setting:: SESSION_COOKIE_NAME
 
@@ -3174,9 +3243,21 @@ Possible values for the setting are:
   regular link from an external website and be blocked in CSRF-prone request
   methods (e.g. ``POST``).
 
-* ``None``: disables the flag.
+* ``'None'`` (string): the session cookie will be sent with all same-site and
+  cross-site requests.
 
-.. _SameSite: https://www.owasp.org/index.php/SameSite
+* ``False``: disables the flag.
+
+.. note::
+
+    Modern browsers provide a more secure default policy for the ``SameSite``
+    flag and will assume ``Lax`` for cookies without an explicit value set.
+
+.. versionchanged:: 3.1
+
+    Setting ``SESSION_COOKIE_SAMESITE = 'None'`` was allowed.
+
+.. _SameSite: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie/SameSite
 
 .. setting:: SESSION_COOKIE_SECURE
 
@@ -3366,6 +3447,8 @@ your additional files directory(ies) e.g.::
 Note that these paths should use Unix-style forward slashes, even on Windows
 (e.g. ``"C:/Users/user/mysite/extra_static_content"``).
 
+.. _staticfiles-dirs-prefixes:
+
 Prefixes (optional)
 ~~~~~~~~~~~~~~~~~~~
 
@@ -3486,6 +3569,7 @@ Email
 
 Error reporting
 ---------------
+* :setting:`DEFAULT_EXCEPTION_REPORTER`
 * :setting:`DEFAULT_EXCEPTION_REPORTER_FILTER`
 * :setting:`IGNORABLE_404_URLS`
 * :setting:`MANAGERS`

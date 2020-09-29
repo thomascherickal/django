@@ -74,15 +74,18 @@ Builtin tags
 Django's system checks are organized using the following tags:
 
 * ``admin``: Checks of any admin site declarations.
+* ``async_support``: Checks asynchronous-related configuration.
 * ``caches``: Checks cache related configuration.
 * ``compatibility``: Flags potential problems with version upgrades.
 * ``database``: Checks database-related configuration issues. Database checks
   are not run by default because they do more than static code analysis as
   regular checks do. They are only run by the :djadmin:`migrate` command or if
-  you specify the ``database`` tag when calling the :djadmin:`check` command.
+  you specify configured database aliases using the ``--database`` option when
+  calling the :djadmin:`check` command.
 * ``models``: Checks of model, field, and manager definitions.
 * ``security``: Checks security related configuration.
 * ``signals``: Checks on signal declarations and handler registrations.
+* ``sites``: Checks :mod:`django.contrib.sites` configuration.
 * ``staticfiles``: Checks :mod:`django.contrib.staticfiles` configuration.
 * ``templates``: Checks template related configuration.
 * ``translation``: Checks translation related configuration.
@@ -90,8 +93,32 @@ Django's system checks are organized using the following tags:
 
 Some checks may be registered with multiple tags.
 
+.. versionchanged:: 3.1
+
+    The ``async_support`` tag was added.
+
+.. versionchanged:: 3.1
+
+    The ``database`` checks are now run only for database aliases specified
+    using the :option:`check --database` option.
+
+.. versionchanged:: 3.2
+
+    The ``sites`` tag was added.
+
 Core system checks
 ==================
+
+Asynchronous support
+--------------------
+
+.. versionadded:: 3.1
+
+The following checks verify your setup for :doc:`/topics/async`:
+
+* **async.E001**: You should not set the :envvar:`DJANGO_ALLOW_ASYNC_UNSAFE`
+  environment variable in deployment. This disables :ref:`async safety
+  protection <async-safety>`.
 
 Backwards compatibility
 -----------------------
@@ -115,15 +142,18 @@ configured:
 Database
 --------
 
-MySQL
-~~~~~
+MySQL and MariaDB
+~~~~~~~~~~~~~~~~~
 
-If you're using MySQL, the following checks will be performed:
+If you're using MySQL or MariaDB, the following checks will be performed:
 
-* **mysql.E001**: MySQL does not allow unique ``CharField``\s to have a
+* **mysql.E001**: MySQL/MariaDB does not allow unique ``CharField``\s to have a
+  ``max_length`` > 255. *This check was changed to* ``mysql.W003`` *in Django
+  3.1 as the real maximum size depends on many factors.*
+* **mysql.W002**: MySQL/MariaDB Strict Mode is not set for database connection
+  ``<alias>``. See also :ref:`mysql-sql-mode`.
+* **mysql.W003**: MySQL/MariaDB may not allow unique ``CharField``\s to have a
   ``max_length`` > 255.
-* **mysql.W002**: MySQL Strict Mode is not set for database connection
-  '<alias>'. See also :ref:`mysql-sql-mode`.
 
 Model fields
 ------------
@@ -165,6 +195,9 @@ Model fields
   ``<field data type>`` columns.
 * **fields.E170**: ``BinaryField``’s ``default`` cannot be a string. Use bytes
   content instead.
+* **fields.E180**: ``<database>`` does not support ``JSONField``\s.
+* **fields.E190**: ``<database>`` does not support a database collation on
+  ``<field_type>``\s.
 * **fields.E900**: ``IPAddressField`` has been removed except for support in
   historical migrations.
 * **fields.W900**: ``IPAddressField`` has been deprecated. Support for it
@@ -177,6 +210,11 @@ Model fields
   in historical migrations.
 * **fields.W902**: ``FloatRangeField`` is deprecated and will be removed in
   Django 3.1. *This check appeared in Django 2.2 and 3.0*.
+* **fields.W903**: ``NullBooleanField`` is deprecated. Support for it (except
+  in historical migrations) will be removed in Django 4.0.
+* **fields.W904**: ``django.contrib.postgres.fields.JSONField`` is deprecated.
+  Support for it (except in historical migrations) will be removed in Django
+  4.0.
 
 File fields
 ~~~~~~~~~~~
@@ -213,9 +251,8 @@ Related fields
 * **fields.E309**: Reverse query name ``<related query name>`` must not contain
   ``'__'``.
 * **fields.E310**: No subset of the fields ``<field1>``, ``<field2>``, ... on
-  model ``<model>`` is unique. Add ``unique=True`` on any of those fields or
-  add at least a subset of them to a unique_together constraint.
-* **fields.E311**: ``<model>`` must set ``unique=True`` because it is
+  model ``<model>`` is unique.
+* **fields.E311**: ``<model>.<field name>`` must be unique because it is
   referenced by a ``ForeignKey``.
 * **fields.E312**: The ``to_field`` ``<field name>`` doesn't exist on the
   related model ``<app label>.<model>``.
@@ -255,6 +292,8 @@ Related fields
   effect as using a ``OneToOneField``.
 * **fields.W343**: ``limit_choices_to`` has no effect on ``ManyToManyField``
   with a ``through`` model.
+* **fields.W344**: The field's intermediary table ``<table name>`` clashes with
+  the table name of ``<model>``/``<model>.<field name>``.
 
 Models
 ------
@@ -276,17 +315,17 @@ Models
 * **models.E009**: All ``index_together`` elements must be lists or tuples.
 * **models.E010**: ``unique_together`` must be a list or tuple.
 * **models.E011**: All ``unique_together`` elements must be lists or tuples.
-* **models.E012**: ``indexes/index_together/unique_together`` refers to the
-  nonexistent field ``<field name>``.
-* **models.E013**: ``indexes/index_together/unique_together`` refers to a
-  ``ManyToManyField`` ``<field name>``, but ``ManyToManyField``\s are not
-  supported for that option.
+* **models.E012**: ``constraints/indexes/index_together/unique_together``
+  refers to the nonexistent field ``<field name>``.
+* **models.E013**: ``constraints/indexes/index_together/unique_together``
+  refers to a ``ManyToManyField`` ``<field name>``, but ``ManyToManyField``\s
+  are not supported for that option.
 * **models.E014**: ``ordering`` must be a tuple or list (even if you want to
   order by only one field).
 * **models.E015**: ``ordering`` refers to the nonexistent field, related field,
   or lookup ``<field name>``.
-* **models.E016**: ``indexes/index_together/unique_together`` refers to field
-  ``<field_name>`` which is not local to model ``<model>``.
+* **models.E016**: ``constraints/indexes/index_together/unique_together``
+  refers to field ``<field_name>`` which is not local to model ``<model>``.
 * **models.E017**: Proxy model ``<model>`` contains model fields.
 * **models.E018**: Autogenerated column name too long for field ``<field>``.
   Maximum length is ``<maximum length>`` for database ``<alias>``.
@@ -311,11 +350,11 @@ Models
 * **models.E028**: ``db_table`` ``<db_table>`` is used by multiple models:
   ``<model list>``.
 * **models.E029**: index name ``<index>`` is not unique for model ``<model>``.
-* **models.E030**: index name ``<index>`` is not unique amongst models:
+* **models.E030**: index name ``<index>`` is not unique among models:
   ``<model list>``.
 * **models.E031**: constraint name ``<constraint>`` is not unique for model
   ``<model>``.
-* **models.E032**: constraint name ``<constraint>`` is not unique amongst
+* **models.E032**: constraint name ``<constraint>`` is not unique among
   models: ``<model list>``.
 * **models.E033**: The index name ``<index>`` cannot start with an underscore
   or a number.
@@ -323,6 +362,16 @@ Models
   ``<max_length>`` characters.
 * **models.W035**: ``db_table`` ``<db_table>`` is used by multiple models:
   ``<model list>``.
+* **models.W036**: ``<database>`` does not support unique constraints with
+  conditions.
+* **models.W037**: ``<database>`` does not support indexes with conditions.
+* **models.W038**: ``<database>`` does not support deferrable unique
+  constraints.
+* **models.W039**: ``<database>`` does not support unique constraints with
+  non-key columns.
+* **models.W040**: ``<database>`` does not support indexes with non-key
+  columns.
+* **models.E041**: ``constraints`` refers to the joined field ``<field name>``.
 
 Security
 --------
@@ -376,8 +425,8 @@ The following checks are run if you use the :option:`check --deploy` option:
   set to ``True``, so your pages will not be served with an
   ``'X-XSS-Protection: 1; mode=block'`` header. You should consider enabling
   this header to activate the browser's XSS filtering and help prevent XSS
-  attacks. *This check is removed in Django 3.0 as the ``X-XSS-Protection``
-  header is no longer honored by modern browsers.*
+  attacks. *This check is removed in Django 3.0 as the* ``X-XSS-Protection``
+  *header is no longer honored by modern browsers.*
 * **security.W008**: Your :setting:`SECURE_SSL_REDIRECT` setting is not set to
   ``True``. Unless your site should be available over both SSL and non-SSL
   connections, you may want to either set this setting to ``True`` or configure
@@ -436,6 +485,12 @@ The following checks are run if you use the :option:`check --deploy` option:
   should consider enabling this header to protect user privacy.
 * **security.E023**: You have set the :setting:`SECURE_REFERRER_POLICY` setting
   to an invalid value.
+
+The following checks verify that your security-related settings are correctly
+configured:
+
+* **security.E100**: :setting:`DEFAULT_HASHING_ALGORITHM` must be ``'sha1'`` or
+  ``'sha256'``.
 
 Signals
 -------
@@ -633,7 +688,7 @@ with the admin site:
 * **admin.E129**: ``<modeladmin>`` must define a ``has_<foo>_permission()``
   method for the ``<action>`` action.
 * **admin.E130**: ``__name__`` attributes of actions defined in
-  ``<modeladmin>`` must be unique.
+  ``<modeladmin>`` must be unique. Name ``<name>`` is not unique.
 
 ``InlineModelAdmin``
 ~~~~~~~~~~~~~~~~~~~~
@@ -645,7 +700,8 @@ inline on a :class:`~django.contrib.admin.ModelAdmin`.
 * **admin.E201**: Cannot exclude the field ``<field name>``, because it is the
   foreign key to the parent model ``<app_label>.<model>``.
 * **admin.E202**: ``<model>`` has no ``ForeignKey`` to ``<parent model>``./
-  ``<model>`` has more than one ``ForeignKey`` to ``<parent model>``.
+  ``<model>`` has more than one ``ForeignKey`` to ``<parent model>``. You must
+  specify a ``fk_name`` attribute.
 * **admin.E203**: The value of ``extra`` must be an integer.
 * **admin.E204**: The value of ``max_num`` must be an integer.
 * **admin.E205**: The value of ``min_num`` must be an integer.
@@ -696,6 +752,9 @@ The following checks are performed on the default
   must be in :setting:`MIDDLEWARE` in order to use the admin application.
 * **admin.E410**: :class:`django.contrib.sessions.middleware.SessionMiddleware`
   must be in :setting:`MIDDLEWARE` in order to use the admin application.
+* **admin.W411**: ``django.template.context_processors.request`` must be
+  enabled in :class:`~django.template.backends.django.DjangoTemplates`
+  (:setting:`TEMPLATES`) in order to use the admin navigation sidebar.
 
 ``auth``
 --------
@@ -723,6 +782,10 @@ The following checks are performed on the default
 * **auth.C010**: ``<User model>.is_authenticated`` must be an attribute or
   property rather than a method. Ignoring this is a security issue as anonymous
   users will be treated as authenticated!
+* **auth.E011**: The name of model ``<model>`` must be at most 93 characters
+  for its builtin permission names to be at most 100 characters.
+* **auth.E012**: The permission codenamed ``<codename>`` of model ``<model>``
+  is longer than 100 characters.
 
 ``contenttypes``
 ----------------
@@ -762,6 +825,11 @@ The following checks are performed on any model using a
   ``<field name>``.
 * **sites.E002**: ``CurrentSiteManager`` cannot use ``<field>`` as it is not a
   foreign key or a many-to-many field.
+
+The following checks verify that :mod:`django.contrib.sites` is correctly
+configured:
+
+* **sites.E101**: The :setting:`SITE_ID` setting must be an integer.
 
 ``staticfiles``
 ---------------

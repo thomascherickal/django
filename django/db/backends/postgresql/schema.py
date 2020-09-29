@@ -12,14 +12,23 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     sql_set_sequence_max = "SELECT setval('%(sequence)s', MAX(%(column)s)) FROM %(table)s"
     sql_set_sequence_owner = 'ALTER SEQUENCE %(sequence)s OWNED BY %(table)s.%(column)s'
 
-    sql_create_index = "CREATE INDEX %(name)s ON %(table)s%(using)s (%(columns)s)%(extra)s%(condition)s"
+    sql_create_index = (
+        'CREATE INDEX %(name)s ON %(table)s%(using)s '
+        '(%(columns)s)%(include)s%(extra)s%(condition)s'
+    )
     sql_create_index_concurrently = (
-        "CREATE INDEX CONCURRENTLY %(name)s ON %(table)s%(using)s (%(columns)s)%(extra)s%(condition)s"
+        'CREATE INDEX CONCURRENTLY %(name)s ON %(table)s%(using)s '
+        '(%(columns)s)%(include)s%(extra)s%(condition)s'
     )
     sql_delete_index = "DROP INDEX IF EXISTS %(name)s"
     sql_delete_index_concurrently = "DROP INDEX CONCURRENTLY IF EXISTS %(name)s"
 
-    sql_create_column_inline_fk = 'REFERENCES %(to_table)s(%(to_column)s)%(deferrable)s'
+    # Setting the constraint to IMMEDIATE to allow changing data in the same
+    # transaction.
+    sql_create_column_inline_fk = (
+        'CONSTRAINT %(name)s REFERENCES %(to_table)s(%(to_column)s)%(deferrable)s'
+        '; SET CONSTRAINTS %(namespace)s%(name)s IMMEDIATE'
+    )
     # Setting the constraint to IMMEDIATE runs any deferred checks to allow
     # dropping it in the same transaction.
     sql_delete_fk = "SET CONSTRAINTS %(name)s IMMEDIATE; ALTER TABLE %(table)s DROP CONSTRAINT %(name)s"
@@ -29,8 +38,11 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     def quote_value(self, value):
         if isinstance(value, str):
             value = value.replace('%', '%%')
+        adapted = psycopg2.extensions.adapt(value)
+        if hasattr(adapted, 'encoding'):
+            adapted.encoding = 'utf8'
         # getquoted() returns a quoted bytestring of the adapted value.
-        return psycopg2.extensions.adapt(value).getquoted().decode()
+        return adapted.getquoted().decode()
 
     def _field_indexes_sql(self, model, field):
         output = super()._field_indexes_sql(model, field)
@@ -143,6 +155,19 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
                     ),
                 ],
             )
+        elif old_field.db_parameters(connection=self.connection)['type'] in serial_fields_map:
+            # Drop the sequence if migrating away from AutoField.
+            column = strip_quotes(new_field.column)
+            sequence_name = '%s_%s_seq' % (table, column)
+            fragment, _ = super()._alter_column_type_sql(model, old_field, new_field, new_type)
+            return fragment, [
+                (
+                    self.sql_delete_sequence % {
+                        'sequence': self.quote_name(sequence_name),
+                    },
+                    [],
+                ),
+            ]
         else:
             return super()._alter_column_type_sql(model, old_field, new_field, new_type)
 
@@ -192,10 +217,11 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     def _create_index_sql(
         self, model, fields, *, name=None, suffix='', using='',
         db_tablespace=None, col_suffixes=(), sql=None, opclasses=(),
-        condition=None, concurrently=False,
+        condition=None, concurrently=False, include=None,
     ):
         sql = self.sql_create_index if not concurrently else self.sql_create_index_concurrently
         return super()._create_index_sql(
             model, fields, name=name, suffix=suffix, using=using, db_tablespace=db_tablespace,
             col_suffixes=col_suffixes, sql=sql, opclasses=opclasses, condition=condition,
+            include=include,
         )

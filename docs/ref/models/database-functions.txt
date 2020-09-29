@@ -87,6 +87,25 @@ Usage examples::
     >>> now = timezone.now()
     >>> Coalesce('updated', Cast(now, DateTimeField()))
 
+``Collate``
+-----------
+
+.. class:: Collate(expression, collation)
+
+.. versionadded:: 3.2
+
+Takes an expression and a collation name to query against.
+
+For example, to filter case-insensitively in SQLite::
+
+    >>> Author.objects.filter(name=Collate(Value('john'), 'nocase'))
+    <QuerySet [<Author: John>, <Author: john>]>
+
+It can also be used when ordering, for example with PostgreSQL::
+
+    >>> Author.objects.order_by(Collate('name', 'et-x-icu'))
+    <QuerySet [<Author: Ursula>, <Author: Veronika>, <Author: Ülle>]>
+
 ``Greatest``
 ------------
 
@@ -479,10 +498,6 @@ The ``is_dst`` parameter indicates whether or not ``pytz`` should interpret
 nonexistent and ambiguous datetimes in daylight saving time. By default (when
 ``is_dst=None``), ``pytz`` raises an exception for such datetimes.
 
-.. versionadded:: 3.0
-
-    The ``is_dst`` parameter was added.
-
 Given the datetime ``2015-06-15 14:30:50.000321+00:00``, the built-in ``kind``\s
 return:
 
@@ -517,8 +532,8 @@ should typically be used instead of the more verbose equivalent,
 e.g. use ``TruncYear(...)`` rather than ``Trunc(..., kind='year')``.
 
 The subclasses are all defined as transforms, but they aren't registered with
-any fields, because the obvious lookup names are already reserved by the
-``Extract`` subclasses.
+any fields, because the lookup names are already reserved by the ``Extract``
+subclasses.
 
 Usage example::
 
@@ -608,19 +623,27 @@ that deal with date-parts can be used with ``DateField``::
 ``DateTimeField`` truncation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. class:: TruncDate(expression, **extra)
+.. class:: TruncDate(expression, tzinfo=None, **extra)
 
     .. attribute:: lookup_name = 'date'
     .. attribute:: output_field = DateField()
+
+    .. versionchanged:: 3.2
+
+        The ``tzinfo`` parameter was added.
 
 ``TruncDate`` casts ``expression`` to a date rather than using the built-in SQL
 truncate function. It's also registered as a transform on  ``DateTimeField`` as
 ``__date``.
 
-.. class:: TruncTime(expression, **extra)
+.. class:: TruncTime(expression, tzinfo=None, **extra)
 
     .. attribute:: lookup_name = 'time'
     .. attribute:: output_field = TimeField()
+
+    .. versionchanged:: 3.2
+
+        The ``tzinfo`` parameter was added.
 
 ``TruncTime`` casts ``expression`` to a time rather than using the built-in SQL
 truncate function. It's also registered as a transform on ``DateTimeField`` as
@@ -677,14 +700,17 @@ Usage example::
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. class:: TruncHour(expression, output_field=None, tzinfo=None, is_dst=None, **extra)
+    :noindex:
 
     .. attribute:: kind = 'hour'
 
 .. class:: TruncMinute(expression, output_field=None, tzinfo=None, is_dst=None, **extra)
+    :noindex:
 
     .. attribute:: kind = 'minute'
 
 .. class:: TruncSecond(expression, output_field=None, tzinfo=None, is_dst=None, **extra)
+    :noindex:
 
     .. attribute:: kind = 'second'
 
@@ -1117,8 +1143,6 @@ It can also be registered as a transform. For example::
 
 .. class:: Sign(expression, **extra)
 
-.. versionadded:: 3.0
-
 Returns the sign (-1, 0, 1) of a numeric field or expression.
 
 Usage example::
@@ -1354,8 +1378,6 @@ spaces.
 
 .. class:: MD5(expression, **extra)
 
-.. versionadded:: 3.0
-
 Accepts a single text field or expression and returns the MD5 hash of the
 string.
 
@@ -1485,8 +1507,6 @@ spaces.
 .. class:: SHA256(expression, **extra)
 .. class:: SHA384(expression, **extra)
 .. class:: SHA512(expression, **extra)
-
-.. versionadded:: 3.0
 
 Accepts a single text field or expression and returns the particular hash of
 the string.

@@ -50,9 +50,10 @@ class View:
         """Main entry point for a request-response process."""
         for key in initkwargs:
             if key in cls.http_method_names:
-                raise TypeError("You tried to pass in the %s method name as a "
-                                "keyword argument to %s(). Don't do that."
-                                % (key, cls.__name__))
+                raise TypeError(
+                    'The method name %s is not accepted as a keyword argument '
+                    'to %s().' % (key, cls.__name__)
+                )
             if not hasattr(cls, key):
                 raise TypeError("%s() received an invalid keyword %r. as_view "
                                 "only accepts arguments that are already "
@@ -106,8 +107,8 @@ class View:
     def options(self, request, *args, **kwargs):
         """Handle responding to requests for the OPTIONS HTTP verb."""
         response = HttpResponse()
-        response['Allow'] = ', '.join(self._allowed_methods())
-        response['Content-Length'] = '0'
+        response.headers['Allow'] = ', '.join(self._allowed_methods())
+        response.headers['Content-Length'] = '0'
         return response
 
     def _allowed_methods(self):

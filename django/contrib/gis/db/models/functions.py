@@ -4,12 +4,12 @@ from django.contrib.gis.db.models.fields import BaseSpatialField, GeometryField
 from django.contrib.gis.db.models.sql import AreaField, DistanceField
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.exceptions import FieldError
+from django.db import NotSupportedError
 from django.db.models import (
-    BinaryField, BooleanField, FloatField, IntegerField, TextField, Transform,
+    BinaryField, BooleanField, FloatField, Func, IntegerField, TextField,
+    Transform, Value,
 )
-from django.db.models.expressions import Func, Value
 from django.db.models.functions import Cast
-from django.db.utils import NotSupportedError
 from django.utils.functional import cached_property
 
 NUMERIC_TYPES = (int, float, Decimal)
@@ -101,22 +101,27 @@ class SQLiteDecimalToFloatMixin:
     is not acceptable by the GIS functions expecting numeric values.
     """
     def as_sqlite(self, compiler, connection, **extra_context):
-        for expr in self.get_source_expressions():
-            if hasattr(expr, 'value') and isinstance(expr.value, Decimal):
-                expr.value = float(expr.value)
-        return super().as_sql(compiler, connection, **extra_context)
+        copy = self.copy()
+        copy.set_source_expressions([
+            Value(float(expr.value)) if hasattr(expr, 'value') and isinstance(expr.value, Decimal)
+            else expr
+            for expr in copy.get_source_expressions()
+        ])
+        return copy.as_sql(compiler, connection, **extra_context)
 
 
 class OracleToleranceMixin:
     tolerance = 0.05
 
     def as_oracle(self, compiler, connection, **extra_context):
-        tol = self.extra.get('tolerance', self.tolerance)
-        return self.as_sql(
-            compiler, connection,
-            template="%%(function)s(%%(expressions)s, %s)" % tol,
-            **extra_context
-        )
+        tolerance = Value(self._handle_param(
+            self.extra.get('tolerance', self.tolerance),
+            'tolerance',
+            NUMERIC_TYPES,
+        ))
+        clone = self.copy()
+        clone.set_source_expressions([*self.get_source_expressions(), tolerance])
+        return clone.as_sql(compiler, connection, **extra_context)
 
 
 class Area(OracleToleranceMixin, GeoFunc):
@@ -188,12 +193,14 @@ class AsGML(GeoFunc):
         return super(AsGML, clone).as_sql(compiler, connection, **extra_context)
 
 
-class AsKML(AsGML):
-    def as_sqlite(self, compiler, connection, **extra_context):
-        # No version parameter
-        clone = self.copy()
-        clone.set_source_expressions(self.get_source_expressions()[1:])
-        return clone.as_sql(compiler, connection, **extra_context)
+class AsKML(GeoFunc):
+    output_field = TextField()
+
+    def __init__(self, expression, precision=8, **extra):
+        expressions = [expression]
+        if precision is not None:
+            expressions.append(self._handle_param(precision, 'precision', int))
+        super().__init__(*expressions, **extra)
 
 
 class AsSVG(GeoFunc):
@@ -219,7 +226,7 @@ class AsWKT(GeoFunc):
     arity = 1
 
 
-class BoundingCircle(OracleToleranceMixin, GeoFunc):
+class BoundingCircle(OracleToleranceMixin, GeomOutputGeoFunc):
     def __init__(self, expression, num_seg=48, **extra):
         super().__init__(expression, num_seg, **extra)
 
@@ -376,7 +383,7 @@ class LineLocatePoint(GeoFunc):
     geom_param_pos = (0, 1)
 
 
-class MakeValid(GeoFunc):
+class MakeValid(GeomOutputGeoFunc):
     pass
 
 

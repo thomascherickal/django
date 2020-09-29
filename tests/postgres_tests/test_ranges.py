@@ -11,10 +11,14 @@ from django.test.utils import isolate_apps
 from django.utils import timezone
 
 from . import PostgreSQLSimpleTestCase, PostgreSQLTestCase
-from .models import PostgreSQLModel, RangeLookupsModel, RangesModel
+from .models import (
+    BigAutoFieldModel, PostgreSQLModel, RangeLookupsModel, RangesModel,
+    SmallAutoFieldModel,
+)
 
 try:
     from psycopg2.extras import DateRange, DateTimeTZRange, NumericRange
+
     from django.contrib.postgres import fields as pg_fields, forms as pg_forms
     from django.contrib.postgres.validators import (
         RangeMaxValueValidator, RangeMinValueValidator,
@@ -167,7 +171,7 @@ class TestRangeContainsLookup(PostgreSQLTestCase):
             self.aware_timestamps[1],
             (self.timestamps[1], self.timestamps[2]),
             (self.aware_timestamps[1], self.aware_timestamps[2]),
-            Value(self.dates[0], output_field=DateTimeField()),
+            Value(self.dates[0]),
             Func(F('dates'), function='lower', output_field=DateTimeField()),
             F('timestamps_inner'),
         )
@@ -354,6 +358,17 @@ class TestQueryingWithRanges(PostgreSQLTestCase):
             [objs[0]],
         )
 
+    def test_small_integer_field_contained_by(self):
+        objs = [
+            RangeLookupsModel.objects.create(small_integer=8),
+            RangeLookupsModel.objects.create(small_integer=4),
+            RangeLookupsModel.objects.create(small_integer=-1),
+        ]
+        self.assertSequenceEqual(
+            RangeLookupsModel.objects.filter(small_integer__contained_by=NumericRange(4, 6)),
+            [objs[1]],
+        )
+
     def test_integer_range(self):
         objs = [
             RangeLookupsModel.objects.create(integer=5),
@@ -376,6 +391,19 @@ class TestQueryingWithRanges(PostgreSQLTestCase):
             [objs[0]]
         )
 
+    def test_decimal_field_contained_by(self):
+        objs = [
+            RangeLookupsModel.objects.create(decimal_field=Decimal('1.33')),
+            RangeLookupsModel.objects.create(decimal_field=Decimal('2.88')),
+            RangeLookupsModel.objects.create(decimal_field=Decimal('99.17')),
+        ]
+        self.assertSequenceEqual(
+            RangeLookupsModel.objects.filter(
+                decimal_field__contained_by=NumericRange(Decimal('1.89'), Decimal('7.91')),
+            ),
+            [objs[1]],
+        )
+
     def test_float_range(self):
         objs = [
             RangeLookupsModel.objects.create(float=5),
@@ -385,6 +413,39 @@ class TestQueryingWithRanges(PostgreSQLTestCase):
         self.assertSequenceEqual(
             RangeLookupsModel.objects.filter(float__contained_by=NumericRange(1, 98)),
             [objs[0]]
+        )
+
+    def test_small_auto_field_contained_by(self):
+        objs = SmallAutoFieldModel.objects.bulk_create([
+            SmallAutoFieldModel() for i in range(1, 5)
+        ])
+        self.assertSequenceEqual(
+            SmallAutoFieldModel.objects.filter(
+                id__contained_by=NumericRange(objs[1].pk, objs[3].pk),
+            ),
+            objs[1:3],
+        )
+
+    def test_auto_field_contained_by(self):
+        objs = RangeLookupsModel.objects.bulk_create([
+            RangeLookupsModel() for i in range(1, 5)
+        ])
+        self.assertSequenceEqual(
+            RangeLookupsModel.objects.filter(
+                id__contained_by=NumericRange(objs[1].pk, objs[3].pk),
+            ),
+            objs[1:3],
+        )
+
+    def test_big_auto_field_contained_by(self):
+        objs = BigAutoFieldModel.objects.bulk_create([
+            BigAutoFieldModel() for i in range(1, 5)
+        ])
+        self.assertSequenceEqual(
+            BigAutoFieldModel.objects.filter(
+                id__contained_by=NumericRange(objs[1].pk, objs[3].pk),
+            ),
+            objs[1:3],
         )
 
     def test_f_ranges(self):

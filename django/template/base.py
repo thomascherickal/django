@@ -50,10 +50,10 @@ times with multiple contexts)
 '<html></html>'
 """
 
+import inspect
 import logging
 import re
 from enum import Enum
-from inspect import getcallargs, getfullargspec, unwrap
 
 from django.template.context import BaseContext
 from django.utils.formats import localize
@@ -635,7 +635,7 @@ class FilterExpression:
                                           (token[:upto], token[upto:start],
                                            token[start:]))
             if var_obj is None:
-                var, constant = match.group("var", "constant")
+                var, constant = match['var'], match['constant']
                 if constant:
                     try:
                         var_obj = Variable(constant).resolve({})
@@ -647,9 +647,9 @@ class FilterExpression:
                 else:
                     var_obj = Variable(var)
             else:
-                filter_name = match.group("filter_name")
+                filter_name = match['filter_name']
                 args = []
-                constant_arg, var_arg = match.group("constant_arg", "var_arg")
+                constant_arg, var_arg = match['constant_arg'], match['var_arg']
                 if constant_arg:
                     args.append((False, Variable(constant_arg).resolve({})))
                 elif var_arg:
@@ -707,9 +707,9 @@ class FilterExpression:
         # First argument, filter input, is implied.
         plen = len(provided) + 1
         # Check to see if a decorator is providing the real function.
-        func = unwrap(func)
+        func = inspect.unwrap(func)
 
-        args, _, _, defaults, _, _, _ = getfullargspec(func)
+        args, _, _, defaults, _, _, _ = inspect.getfullargspec(func)
         alen = len(args)
         dlen = len(defaults or [])
         # Not enough OR Too many
@@ -857,8 +857,9 @@ class Variable:
                         try:  # method call (assuming no args required)
                             current = current()
                         except TypeError:
+                            signature = inspect.signature(current)
                             try:
-                                getcallargs(current)
+                                signature.bind()
                             except TypeError:  # arguments *were* required
                                 current = context.template.engine.string_if_invalid  # invalid method call
                             else:
@@ -1016,7 +1017,7 @@ def token_kwargs(bits, parser, support_legacy=False):
     if not bits:
         return {}
     match = kwarg_re.match(bits[0])
-    kwarg_format = match and match.group(1)
+    kwarg_format = match and match[1]
     if not kwarg_format:
         if not support_legacy:
             return {}
@@ -1027,7 +1028,7 @@ def token_kwargs(bits, parser, support_legacy=False):
     while bits:
         if kwarg_format:
             match = kwarg_re.match(bits[0])
-            if not match or not match.group(1):
+            if not match or not match[1]:
                 return kwargs
             key, value = match.groups()
             del bits[:1]

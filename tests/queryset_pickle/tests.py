@@ -1,17 +1,17 @@
 import datetime
 import pickle
 
+import django
 from django.db import models
 from django.test import TestCase
-from django.utils.version import get_version
 
-from .models import Container, Event, Group, Happening, M2MModel
+from .models import Container, Event, Group, Happening, M2MModel, MyEvent
 
 
 class PickleabilityTestCase(TestCase):
     @classmethod
     def setUpTestData(cls):
-        Happening.objects.create()  # make sure the defaults are working (#20158)
+        cls.happening = Happening.objects.create()  # make sure the defaults are working (#20158)
 
     def assert_pickles(self, qs):
         self.assertEqual(list(pickle.loads(pickle.dumps(qs))), list(qs))
@@ -195,6 +195,18 @@ class PickleabilityTestCase(TestCase):
         with self.assertNumQueries(0):
             self.assert_pickles(groups)
 
+    def test_pickle_exists_kwargs_queryset_not_evaluated(self):
+        group = Group.objects.create(name='group')
+        Event.objects.create(title='event', group=group)
+        groups = Group.objects.annotate(
+            has_event=models.Exists(
+                queryset=Event.objects.filter(group_id=models.OuterRef('id')),
+            ),
+        )
+        list(groups)  # evaluate QuerySet.
+        with self.assertNumQueries(0):
+            self.assert_pickles(groups)
+
     def test_pickle_subquery_queryset_not_evaluated(self):
         group = Group.objects.create(name='group')
         Event.objects.create(title='event', group=group)
@@ -211,6 +223,28 @@ class PickleabilityTestCase(TestCase):
         # Happening.when has a callable default of datetime.datetime.now.
         qs = Happening.objects.annotate(latest_time=models.Max('when'))
         self.assert_pickles(qs)
+
+    def test_annotation_values(self):
+        qs = Happening.objects.values('name').annotate(latest_time=models.Max('when'))
+        reloaded = Happening.objects.all()
+        reloaded.query = pickle.loads(pickle.dumps(qs.query))
+        self.assertEqual(
+            reloaded.get(),
+            {'name': 'test', 'latest_time': self.happening.when},
+        )
+
+    def test_annotation_values_list(self):
+        # values_list() is reloaded to values() when using a pickled query.
+        tests = [
+            Happening.objects.values_list('name'),
+            Happening.objects.values_list('name', flat=True),
+            Happening.objects.values_list('name', named=True),
+        ]
+        for qs in tests:
+            with self.subTest(qs._iterable_class.__name__):
+                reloaded = Happening.objects.all()
+                reloaded.query = pickle.loads(pickle.dumps(qs.query))
+                self.assertEqual(reloaded.get(), {'name': 'test'})
 
     def test_filter_deferred(self):
         qs = Happening.objects.all()
@@ -234,9 +268,18 @@ class PickleabilityTestCase(TestCase):
         unpickled with a different Django version than the current
         """
         qs = Group.previous_django_version_objects.all()
-        msg = "Pickled queryset instance's Django version 1.0 does not match the current version %s." % get_version()
+        msg = (
+            "Pickled queryset instance's Django version 1.0 does not match "
+            "the current version %s." % django.__version__
+        )
         with self.assertRaisesMessage(RuntimeWarning, msg):
             pickle.loads(pickle.dumps(qs))
+
+    def test_order_by_model_with_abstract_inheritance_and_meta_ordering(self):
+        group = Group.objects.create(name='test')
+        event = MyEvent.objects.create(title='test event', group=group)
+        event.edition_set.create()
+        self.assert_pickles(event.edition_set.order_by('event'))
 
 
 class InLookupTests(TestCase):

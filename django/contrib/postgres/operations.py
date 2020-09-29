@@ -1,9 +1,9 @@
 from django.contrib.postgres.signals import (
     get_citext_oids, get_hstore_oids, register_type_handlers,
 )
+from django.db import NotSupportedError, router
 from django.db.migrations import AddIndex, RemoveIndex
 from django.db.migrations.operations.base import Operation
-from django.db.utils import NotSupportedError
 
 
 class CreateExtension(Operation):
@@ -16,9 +16,15 @@ class CreateExtension(Operation):
         pass
 
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
-        if schema_editor.connection.vendor != 'postgresql':
+        if (
+            schema_editor.connection.vendor != 'postgresql' or
+            not router.allow_migrate(schema_editor.connection.alias, app_label)
+        ):
             return
-        schema_editor.execute("CREATE EXTENSION IF NOT EXISTS %s" % schema_editor.quote_name(self.name))
+        if not self.extension_exists(schema_editor, self.name):
+            schema_editor.execute(
+                'CREATE EXTENSION IF NOT EXISTS %s' % schema_editor.quote_name(self.name)
+            )
         # Clear cached, stale oids.
         get_hstore_oids.cache_clear()
         get_citext_oids.cache_clear()
@@ -28,13 +34,30 @@ class CreateExtension(Operation):
         register_type_handlers(schema_editor.connection)
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
-        schema_editor.execute("DROP EXTENSION %s" % schema_editor.quote_name(self.name))
+        if not router.allow_migrate(schema_editor.connection.alias, app_label):
+            return
+        if self.extension_exists(schema_editor, self.name):
+            schema_editor.execute(
+                'DROP EXTENSION IF EXISTS %s' % schema_editor.quote_name(self.name)
+            )
         # Clear cached, stale oids.
         get_hstore_oids.cache_clear()
         get_citext_oids.cache_clear()
 
+    def extension_exists(self, schema_editor, extension):
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT 1 FROM pg_extension WHERE extname = %s',
+                [extension],
+            )
+            return bool(cursor.fetchone())
+
     def describe(self):
         return "Creates extension %s" % self.name
+
+    @property
+    def migration_name_fragment(self):
+        return 'create_extension_%s' % self.name
 
 
 class BloomExtension(CreateExtension):

@@ -9,9 +9,9 @@ from django.test import (
 )
 
 from .models import (
-    Country, NoFields, NullableFields, Pizzeria, ProxyCountry,
-    ProxyMultiCountry, ProxyMultiProxyCountry, ProxyProxyCountry, Restaurant,
-    State, TwoFields,
+    BigAutoFieldModel, Country, NoFields, NullableFields, Pizzeria,
+    ProxyCountry, ProxyMultiCountry, ProxyMultiProxyCountry, ProxyProxyCountry,
+    Restaurant, SmallAutoFieldModel, State, TwoFields,
 )
 
 
@@ -26,7 +26,7 @@ class BulkCreateTests(TestCase):
 
     def test_simple(self):
         created = Country.objects.bulk_create(self.data)
-        self.assertEqual(len(created), 4)
+        self.assertEqual(created, self.data)
         self.assertQuerysetEqual(Country.objects.order_by("-name"), [
             "United States of America", "The Netherlands", "Germany", "Czech Republic"
         ], attrgetter("name"))
@@ -115,7 +115,8 @@ class BulkCreateTests(TestCase):
     def test_zero_as_autoval(self):
         """
         Zero as id for AutoField should raise exception in MySQL, because MySQL
-        does not allow zero for automatic primary key.
+        does not allow zero for automatic primary key if the
+        NO_AUTO_VALUE_ON_ZERO SQL mode is not enabled.
         """
         valid_country = Country(name='Germany', iso_two_letter='DE')
         invalid_country = Country(id=0, name='Poland', iso_two_letter='PL')
@@ -234,10 +235,16 @@ class BulkCreateTests(TestCase):
 
     @skipUnlessDBFeature('has_bulk_insert')
     def test_bulk_insert_nullable_fields(self):
+        fk_to_auto_fields = {
+            'auto_field': NoFields.objects.create(),
+            'small_auto_field': SmallAutoFieldModel.objects.create(),
+            'big_auto_field': BigAutoFieldModel.objects.create(),
+        }
         # NULL can be mixed with other values in nullable fields
         nullable_fields = [field for field in NullableFields._meta.get_fields() if field.name != 'id']
         NullableFields.objects.bulk_create([
-            NullableFields(**{field.name: None}) for field in nullable_fields
+            NullableFields(**{**fk_to_auto_fields, field.name: None})
+            for field in nullable_fields
         ])
         self.assertEqual(NullableFields.objects.count(), len(nullable_fields))
         for field in nullable_fields:

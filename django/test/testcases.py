@@ -1,12 +1,14 @@
+import asyncio
 import difflib
 import json
 import posixpath
 import sys
 import threading
 import unittest
+import warnings
 from collections import Counter
 from contextlib import contextmanager
-from copy import copy
+from copy import copy, deepcopy
 from difflib import get_close_matches
 from functools import wraps
 from unittest.suite import _DebugResult
@@ -15,6 +17,8 @@ from urllib.parse import (
     parse_qsl, unquote, urlencode, urljoin, urlparse, urlsplit, urlunparse,
 )
 from urllib.request import url2pathname
+
+from asgiref.sync import async_to_sync
 
 from django.apps import apps
 from django.conf import settings
@@ -30,13 +34,14 @@ from django.db import DEFAULT_DB_ALIAS, connection, connections, transaction
 from django.forms.fields import CharField
 from django.http import QueryDict
 from django.http.request import split_domain_port, validate_host
-from django.test.client import Client
+from django.test.client import AsyncClient, Client
 from django.test.html import HTMLParseError, parse_html
 from django.test.signals import setting_changed, template_rendered
 from django.test.utils import (
     CaptureQueriesContext, ContextList, compare_xml, modify_settings,
     override_settings,
 )
+from django.utils.deprecation import RemovedInDjango41Warning
 from django.utils.functional import classproperty
 from django.views.static import serve
 
@@ -148,6 +153,7 @@ class SimpleTestCase(unittest.TestCase):
     # The class we'll use for the test client self.client.
     # Can be overridden in derived classes.
     client_class = Client
+    async_client_class = AsyncClient
     _overridden_settings = None
     _modified_settings = None
 
@@ -257,6 +263,10 @@ class SimpleTestCase(unittest.TestCase):
             getattr(testMethod, "__unittest_skip__", False)
         )
 
+        # Convert async test methods.
+        if asyncio.iscoroutinefunction(testMethod):
+            setattr(self, self._testMethodName, async_to_sync(testMethod))
+
         if not skipped:
             try:
                 self._pre_setup()
@@ -285,6 +295,7 @@ class SimpleTestCase(unittest.TestCase):
         * Clear the mail test outbox.
         """
         self.client = self.client_class()
+        self.async_client = self.async_client_class()
         mail.outbox = []
 
     def _post_teardown(self):
@@ -334,7 +345,6 @@ class SimpleTestCase(unittest.TestCase):
             )
 
             url, status_code = response.redirect_chain[-1]
-            scheme, netloc, path, query, fragment = urlsplit(url)
 
             self.assertEqual(
                 response.status_code, target_status_code,
@@ -1062,6 +1072,59 @@ def connections_support_transactions(aliases=None):
     return all(conn.features.supports_transactions for conn in conns)
 
 
+class TestData:
+    """
+    Descriptor to provide TestCase instance isolation for attributes assigned
+    during the setUpTestData() phase.
+
+    Allow safe alteration of objects assigned in setUpTestData() by test
+    methods by exposing deep copies instead of the original objects.
+
+    Objects are deep copied using a memo kept on the test case instance in
+    order to maintain their original relationships.
+    """
+    memo_attr = '_testdata_memo'
+
+    def __init__(self, name, data):
+        self.name = name
+        self.data = data
+
+    def get_memo(self, testcase):
+        try:
+            memo = getattr(testcase, self.memo_attr)
+        except AttributeError:
+            memo = {}
+            setattr(testcase, self.memo_attr, memo)
+        return memo
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self.data
+        memo = self.get_memo(instance)
+        try:
+            data = deepcopy(self.data, memo)
+        except TypeError:
+            # RemovedInDjango41Warning.
+            msg = (
+                "Assigning objects which don't support copy.deepcopy() during "
+                "setUpTestData() is deprecated. Either assign the %s "
+                "attribute during setUpClass() or setUp(), or add support for "
+                "deepcopy() to %s.%s.%s."
+            ) % (
+                self.name,
+                owner.__module__,
+                owner.__qualname__,
+                self.name,
+            )
+            warnings.warn(msg, category=RemovedInDjango41Warning, stacklevel=2)
+            data = self.data
+        setattr(instance, self.name, data)
+        return data
+
+    def __repr__(self):
+        return '<TestData: name=%r, data=%r>' % (self.name, self.data)
+
+
 class TestCase(TransactionTestCase):
     """
     Similar to TransactionTestCase, but use `transaction.atomic()` to achieve
@@ -1110,12 +1173,16 @@ class TestCase(TransactionTestCase):
                     cls._rollback_atomics(cls.cls_atomics)
                     cls._remove_databases_failures()
                     raise
+        pre_attrs = cls.__dict__.copy()
         try:
             cls.setUpTestData()
         except Exception:
             cls._rollback_atomics(cls.cls_atomics)
             cls._remove_databases_failures()
             raise
+        for name, value in cls.__dict__.items():
+            if value is not pre_attrs.get(name):
+                setattr(cls, name, TestData(name, value))
 
     @classmethod
     def tearDownClass(cls):
@@ -1160,6 +1227,21 @@ class TestCase(TransactionTestCase):
             connection.features.can_defer_constraint_checks and
             not connection.needs_rollback and connection.is_usable()
         )
+
+    @classmethod
+    @contextmanager
+    def captureOnCommitCallbacks(cls, *, using=DEFAULT_DB_ALIAS, execute=False):
+        """Context manager to capture transaction.on_commit() callbacks."""
+        callbacks = []
+        start_count = len(connections[using].run_on_commit)
+        try:
+            yield callbacks
+        finally:
+            run_on_commit = connections[using].run_on_commit[start_count:]
+            callbacks[:] = [func for sids, func in run_on_commit]
+            if execute:
+                for callback in callbacks:
+                    callback()
 
 
 class CheckCondition:

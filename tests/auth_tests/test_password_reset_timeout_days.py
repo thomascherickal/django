@@ -23,6 +23,7 @@ class DeprecationTests(TestCase):
         class Mocked(PasswordResetTokenGenerator):
             def __init__(self, now):
                 self._now_val = now
+                super().__init__()
 
             def _now(self):
                 return self._now_val
@@ -31,15 +32,15 @@ class DeprecationTests(TestCase):
         p0 = PasswordResetTokenGenerator()
         tk1 = p0.make_token(user)
         p1 = Mocked(datetime.now() + timedelta(settings.PASSWORD_RESET_TIMEOUT_DAYS))
-        self.assertTrue(p1.check_token(user, tk1))
+        self.assertIs(p1.check_token(user, tk1), True)
         p2 = Mocked(datetime.now() + timedelta(settings.PASSWORD_RESET_TIMEOUT_DAYS + 1))
-        self.assertFalse(p2.check_token(user, tk1))
+        self.assertIs(p2.check_token(user, tk1), False)
         with self.settings(PASSWORD_RESET_TIMEOUT_DAYS=1):
             self.assertEqual(settings.PASSWORD_RESET_TIMEOUT, 60 * 60 * 24)
             p3 = Mocked(datetime.now() + timedelta(settings.PASSWORD_RESET_TIMEOUT_DAYS))
-            self.assertTrue(p3.check_token(user, tk1))
+            self.assertIs(p3.check_token(user, tk1), True)
             p4 = Mocked(datetime.now() + timedelta(settings.PASSWORD_RESET_TIMEOUT_DAYS + 1))
-            self.assertFalse(p4.check_token(user, tk1))
+            self.assertIs(p4.check_token(user, tk1), False)
 
     def test_override_settings_warning(self):
         with self.assertRaisesMessage(RemovedInDjango40Warning, self.msg):

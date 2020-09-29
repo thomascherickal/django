@@ -10,7 +10,6 @@ from django.test import (
     RequestFactory, SimpleTestCase, modify_settings, override_settings,
 )
 from django.test.utils import require_jinja2
-from django.utils.deprecation import MiddlewareMixin
 
 from .utils import TEMPLATE_DIR
 
@@ -23,9 +22,11 @@ test_processor_name = 'template_tests.test_response.test_processor'
 
 
 # A test middleware that installs a temporary URLConf
-class CustomURLConfMiddleware(MiddlewareMixin):
-    def process_request(self, request):
+def custom_urlconf_middleware(get_response):
+    def middleware(request):
         request.urlconf = 'template_tests.alternate_urls'
+        return get_response(request)
+    return middleware
 
 
 class SimpleTemplateResponseTest(SimpleTestCase):
@@ -121,13 +122,13 @@ class SimpleTemplateResponseTest(SimpleTestCase):
 
     def test_kwargs(self):
         response = self._response(content_type='application/json', status=504, charset='ascii')
-        self.assertEqual(response['content-type'], 'application/json')
+        self.assertEqual(response.headers['content-type'], 'application/json')
         self.assertEqual(response.status_code, 504)
         self.assertEqual(response.charset, 'ascii')
 
     def test_args(self):
         response = SimpleTemplateResponse('', {}, 'application/json', 504)
-        self.assertEqual(response['content-type'], 'application/json')
+        self.assertEqual(response.headers['content-type'], 'application/json')
         self.assertEqual(response.status_code, 504)
 
     @require_jinja2
@@ -174,7 +175,7 @@ class SimpleTemplateResponseTest(SimpleTestCase):
         unpickled_response = pickle.loads(pickled_response)
 
         self.assertEqual(unpickled_response.content, response.content)
-        self.assertEqual(unpickled_response['content-type'], response['content-type'])
+        self.assertEqual(unpickled_response.headers['content-type'], response.headers['content-type'])
         self.assertEqual(unpickled_response.status_code, response.status_code)
 
         # ...and the unpickled response doesn't have the
@@ -248,13 +249,13 @@ class TemplateResponseTest(SimpleTestCase):
 
     def test_kwargs(self):
         response = self._response(content_type='application/json', status=504)
-        self.assertEqual(response['content-type'], 'application/json')
+        self.assertEqual(response.headers['content-type'], 'application/json')
         self.assertEqual(response.status_code, 504)
 
     def test_args(self):
         response = TemplateResponse(self.factory.get('/'), '', {},
                                     'application/json', 504)
-        self.assertEqual(response['content-type'], 'application/json')
+        self.assertEqual(response.headers['content-type'], 'application/json')
         self.assertEqual(response.status_code, 504)
 
     @require_jinja2
@@ -286,7 +287,7 @@ class TemplateResponseTest(SimpleTestCase):
         unpickled_response = pickle.loads(pickled_response)
 
         self.assertEqual(unpickled_response.content, response.content)
-        self.assertEqual(unpickled_response['content-type'], response['content-type'])
+        self.assertEqual(unpickled_response.headers['content-type'], response.headers['content-type'])
         self.assertEqual(unpickled_response.status_code, response.status_code)
 
         # ...and the unpickled response doesn't have the
@@ -319,7 +320,7 @@ class TemplateResponseTest(SimpleTestCase):
         pickle.dumps(unpickled_response)
 
 
-@modify_settings(MIDDLEWARE={'append': ['template_tests.test_response.CustomURLConfMiddleware']})
+@modify_settings(MIDDLEWARE={'append': ['template_tests.test_response.custom_urlconf_middleware']})
 @override_settings(ROOT_URLCONF='template_tests.urls')
 class CustomURLConfTest(SimpleTestCase):
 

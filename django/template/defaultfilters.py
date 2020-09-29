@@ -241,8 +241,8 @@ def stringformat(value, arg):
 @stringfilter
 def title(value):
     """Convert a string into titlecase."""
-    t = re.sub("([a-z])'([A-Z])", lambda m: m.group(0).lower(), value.title())
-    return re.sub(r"\d([A-Z])", lambda m: m.group(0).lower(), t)
+    t = re.sub("([a-z])'([A-Z])", lambda m: m[0].lower(), value.title())
+    return re.sub(r'\d([A-Z])', lambda m: m[0].lower(), t)
 
 
 @register.filter(is_safe=True)
@@ -786,6 +786,7 @@ def yesno(value, arg=None):
     ==========  ======================  ==================================
     """
     if arg is None:
+        # Translators: Please do not add spaces around commas.
         arg = gettext('yes,no,maybe')
     bits = arg.split(',')
     if len(bits) < 2:

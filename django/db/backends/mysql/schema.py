@@ -9,11 +9,10 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     sql_alter_column_null = "MODIFY %(column)s %(type)s NULL"
     sql_alter_column_not_null = "MODIFY %(column)s %(type)s NOT NULL"
     sql_alter_column_type = "MODIFY %(column)s %(type)s"
+    sql_alter_column_collate = "MODIFY %(column)s %(type)s%(collation)s"
 
     # No 'CASCADE' which works as a no-op in MySQL but is undocumented
     sql_delete_column = "ALTER TABLE %(table)s DROP COLUMN %(column)s"
-
-    sql_rename_column = "ALTER TABLE %(table)s CHANGE %(old_column)s %(new_column)s %(type)s"
 
     sql_delete_unique = "ALTER TABLE %(table)s DROP INDEX %(name)s"
     sql_create_column_inline_fk = (
@@ -37,6 +36,17 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
             # crash. Constraint is removed during a "MODIFY" column statement.
             return 'ALTER TABLE %(table)s DROP CONSTRAINT IF EXISTS %(name)s'
         return 'ALTER TABLE %(table)s DROP CHECK %(name)s'
+
+    @property
+    def sql_rename_column(self):
+        # MariaDB >= 10.5.2 and MySQL >= 8.0.4 support an
+        # "ALTER TABLE ... RENAME COLUMN" statement.
+        if self.connection.mysql_is_mariadb:
+            if self.connection.mysql_version >= (10, 5, 2):
+                return super().sql_rename_column
+        elif self.connection.mysql_version >= (8, 0, 4):
+            return super().sql_rename_column
+        return 'ALTER TABLE %(table)s CHANGE %(old_column)s %(new_column)s %(type)s'
 
     def quote_value(self, value):
         self.connection.ensure_connection()

@@ -13,9 +13,6 @@ class R(models.Model):
     is_default = models.BooleanField(default=False)
     p = models.ForeignKey(P, models.CASCADE, null=True)
 
-    def __str__(self):
-        return "%s" % self.pk
-
 
 def get_default_r():
     return R.objects.get_or_create(is_default=True)[0].pk
@@ -66,6 +63,10 @@ class A(models.Model):
     # all the tests; just one smoke test to ensure on_delete works for it as
     # well.
     o2o_setnull = models.ForeignKey(R, models.SET_NULL, null=True, related_name="o2o_nullable_set")
+
+
+class B(models.Model):
+    protect = models.ForeignKey(R, models.PROTECT)
 
 
 def create_a(name):
@@ -140,7 +141,7 @@ class Base(models.Model):
 
 
 class RelToBase(models.Model):
-    base = models.ForeignKey(Base, models.DO_NOTHING)
+    base = models.ForeignKey(Base, models.DO_NOTHING, related_name='rels')
 
 
 class Origin(models.Model):
@@ -171,6 +172,10 @@ class B1(models.Model):
 
 class B2(models.Model):
     delete_top = models.ForeignKey(DeleteTop, models.CASCADE)
+
+
+class B3(models.Model):
+    restrict = models.ForeignKey(R, models.RESTRICT)
 
 
 class DeleteBottom(models.Model):

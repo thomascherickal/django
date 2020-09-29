@@ -8,6 +8,7 @@ from itertools import cycle as itertools_cycle, groupby
 
 from django.conf import settings
 from django.utils import timezone
+from django.utils.deprecation import RemovedInDjango40Warning
 from django.utils.html import conditional_escape, format_html
 from django.utils.lorem_ipsum import paragraphs, words
 from django.utils.safestring import mark_safe
@@ -261,6 +262,7 @@ class IfChangedNode(Node):
 
 
 class IfEqualNode(Node):
+    # RemovedInDjango40Warning.
     child_nodelists = ('nodelist_true', 'nodelist_false')
 
     def __init__(self, var1, var2, nodelist_true, nodelist_false, negate):
@@ -426,7 +428,7 @@ class URLNode(Node):
         self.asvar = asvar
 
     def render(self, context):
-        from django.urls import reverse, NoReverseMatch
+        from django.urls import NoReverseMatch, reverse
         args = [arg.resolve(context) for arg in self.args]
         kwargs = {k: v.resolve(context) for k, v in self.kwargs.items()}
         view_name = self.view_name.resolve(context)
@@ -699,7 +701,7 @@ def firstof(parser, token):
             {{ var3 }}
         {% endif %}
 
-    but obviously much cleaner!
+    but much cleaner!
 
     You can also use a literal string as a fallback value in case all
     passed variables are False::
@@ -820,6 +822,7 @@ def do_for(parser, token):
 
 
 def do_ifequal(parser, token, negate):
+    # RemovedInDjango40Warning.
     bits = list(token.split_contents())
     if len(bits) != 3:
         raise TemplateSyntaxError("%r takes two arguments" % bits[0])
@@ -853,6 +856,10 @@ def ifequal(parser, token):
             ...
         {% endifnotequal %}
     """
+    warnings.warn(
+        'The {% ifequal %} template tag is deprecated in favor of {% if %}.',
+        RemovedInDjango40Warning,
+    )
     return do_ifequal(parser, token, False)
 
 
@@ -862,6 +869,11 @@ def ifnotequal(parser, token):
     Output the contents of the block if the two arguments are not equal.
     See ifequal.
     """
+    warnings.warn(
+        'The {% ifnotequal %} template tag is deprecated in favor of '
+        '{% if %}.',
+        RemovedInDjango40Warning,
+    )
     return do_ifequal(parser, token, True)
 
 
@@ -1418,10 +1430,10 @@ def widthratio(parser, token):
     (because 175/200 = .875; .875 * 100 = 87.5 which is rounded up to 88).
 
     In some cases you might want to capture the result of widthratio in a
-    variable. It can be useful for instance in a blocktrans like this::
+    variable. It can be useful for instance in a blocktranslate like this::
 
         {% widthratio this_value max_value max_width as width %}
-        {% blocktrans %}The width is: {{ width }}{% endblocktrans %}
+        {% blocktranslate %}The width is: {{ width }}{% endblocktranslate %}
     """
     bits = token.split_contents()
     if len(bits) == 4:

@@ -4,7 +4,7 @@ MySQL database backend for Django.
 Requires mysqlclient: https://pypi.org/project/mysqlclient/
 """
 from django.core.exceptions import ImproperlyConfigured
-from django.db import utils
+from django.db import IntegrityError
 from django.db.backends import utils as backend_utils
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.utils.asyncio import async_unsafe
@@ -32,8 +32,8 @@ from .schema import DatabaseSchemaEditor                    # isort:skip
 from .validation import DatabaseValidation                  # isort:skip
 
 version = Database.version_info
-if version < (1, 3, 13):
-    raise ImproperlyConfigured('mysqlclient 1.3.13 or newer is required; you have %s.' % Database.__version__)
+if version < (1, 4, 0):
+    raise ImproperlyConfigured('mysqlclient 1.4.0 or newer is required; you have %s.' % Database.__version__)
 
 
 # MySQLdb returns TIME columns as timedelta -- they are more like timedelta in
@@ -75,7 +75,7 @@ class CursorWrapper:
             # Map some error codes to IntegrityError, since they seem to be
             # misclassified and Django would prefer the more logical place.
             if e.args[0] in self.codes_for_integrityerror:
-                raise utils.IntegrityError(*tuple(e.args))
+                raise IntegrityError(*tuple(e.args))
             raise
 
     def executemany(self, query, args):
@@ -85,7 +85,7 @@ class CursorWrapper:
             # Map some error codes to IntegrityError, since they seem to be
             # misclassified and Django would prefer the more logical place.
             if e.args[0] in self.codes_for_integrityerror:
-                raise utils.IntegrityError(*tuple(e.args))
+                raise IntegrityError(*tuple(e.args))
             raise
 
     def __getattr__(self, attr):
@@ -118,6 +118,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         'BigIntegerField': 'bigint',
         'IPAddressField': 'char(15)',
         'GenericIPAddressField': 'char(39)',
+        'JSONField': 'json',
         'NullBooleanField': 'bool',
         'OneToOneField': 'integer',
         'PositiveBigIntegerField': 'bigint UNSIGNED',
@@ -269,7 +270,8 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         forward references. Always return True to indicate constraint checks
         need to be re-enabled.
         """
-        self.cursor().execute('SET foreign_key_checks=0')
+        with self.cursor() as cursor:
+            cursor.execute('SET foreign_key_checks=0')
         return True
 
     def enable_constraint_checking(self):
@@ -280,7 +282,8 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         # nested inside transaction.atomic.
         self.needs_rollback, needs_rollback = False, self.needs_rollback
         try:
-            self.cursor().execute('SET foreign_key_checks=1')
+            with self.cursor() as cursor:
+                cursor.execute('SET foreign_key_checks=1')
         finally:
             self.needs_rollback = needs_rollback
 
@@ -314,7 +317,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                         )
                     )
                     for bad_row in cursor.fetchall():
-                        raise utils.IntegrityError(
+                        raise IntegrityError(
                             "The row in table '%s' with primary key '%s' has an invalid "
                             "foreign key: %s.%s contains a value '%s' that does not "
                             "have a corresponding value in %s.%s."
@@ -339,18 +342,45 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     @cached_property
     def data_type_check_constraints(self):
         if self.features.supports_column_check_constraints:
-            return {
+            check_constraints = {
                 'PositiveBigIntegerField': '`%(column)s` >= 0',
                 'PositiveIntegerField': '`%(column)s` >= 0',
                 'PositiveSmallIntegerField': '`%(column)s` >= 0',
             }
+            if self.mysql_is_mariadb and self.mysql_version < (10, 4, 3):
+                # MariaDB < 10.4.3 doesn't automatically use the JSON_VALID as
+                # a check constraint.
+                check_constraints['JSONField'] = 'JSON_VALID(`%(column)s`)'
+            return check_constraints
         return {}
 
     @cached_property
-    def mysql_server_info(self):
+    def mysql_server_data(self):
         with self.temporary_connection() as cursor:
-            cursor.execute('SELECT VERSION()')
-            return cursor.fetchone()[0]
+            # Select some server variables and test if the time zone
+            # definitions are installed. CONVERT_TZ returns NULL if 'UTC'
+            # timezone isn't loaded into the mysql.time_zone table.
+            cursor.execute("""
+                SELECT VERSION(),
+                       @@sql_mode,
+                       @@default_storage_engine,
+                       @@sql_auto_is_null,
+                       @@lower_case_table_names,
+                       CONVERT_TZ('2001-01-01 01:00:00', 'UTC', 'UTC') IS NOT NULL
+            """)
+            row = cursor.fetchone()
+        return {
+            'version': row[0],
+            'sql_mode': row[1],
+            'default_storage_engine': row[2],
+            'sql_auto_is_null': bool(row[3]),
+            'lower_case_table_names': bool(row[4]),
+            'has_zoneinfo_database': bool(row[5]),
+        }
+
+    @cached_property
+    def mysql_server_info(self):
+        return self.mysql_server_data['version']
 
     @cached_property
     def mysql_version(self):
@@ -362,3 +392,8 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     @cached_property
     def mysql_is_mariadb(self):
         return 'mariadb' in self.mysql_server_info.lower()
+
+    @cached_property
+    def sql_mode(self):
+        sql_mode = self.mysql_server_data['sql_mode']
+        return set(sql_mode.split(',') if sql_mode else ())

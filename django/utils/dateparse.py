@@ -16,13 +16,13 @@ date_re = _lazy_re_compile(
 
 time_re = _lazy_re_compile(
     r'(?P<hour>\d{1,2}):(?P<minute>\d{1,2})'
-    r'(?::(?P<second>\d{1,2})(?:\.(?P<microsecond>\d{1,6})\d{0,6})?)?'
+    r'(?::(?P<second>\d{1,2})(?:[\.,](?P<microsecond>\d{1,6})\d{0,6})?)?'
 )
 
 datetime_re = _lazy_re_compile(
     r'(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})'
     r'[T ](?P<hour>\d{1,2}):(?P<minute>\d{1,2})'
-    r'(?::(?P<second>\d{1,2})(?:\.(?P<microsecond>\d{1,6})\d{0,6})?)?'
+    r'(?::(?P<second>\d{1,2})(?:[\.,](?P<microsecond>\d{1,6})\d{0,6})?)?'
     r'(?P<tzinfo>Z|[+-]\d{2}(?::?\d{2})?)?$'
 )
 
@@ -33,7 +33,7 @@ standard_duration_re = _lazy_re_compile(
     r'((?:(?P<hours>\d+):)(?=\d+:\d+))?'
     r'(?:(?P<minutes>\d+):)?'
     r'(?P<seconds>\d+)'
-    r'(?:\.(?P<microseconds>\d{1,6})\d{0,6})?'
+    r'(?:[\.,](?P<microseconds>\d{1,6})\d{0,6})?'
     r'$'
 )
 
@@ -137,11 +137,11 @@ def parse_duration(value):
     )
     if match:
         kw = match.groupdict()
-        days = datetime.timedelta(float(kw.pop('days', 0) or 0))
         sign = -1 if kw.pop('sign', '+') == '-' else 1
         if kw.get('microseconds'):
             kw['microseconds'] = kw['microseconds'].ljust(6, '0')
         if kw.get('seconds') and kw.get('microseconds') and kw['seconds'].startswith('-'):
             kw['microseconds'] = '-' + kw['microseconds']
-        kw = {k: float(v) for k, v in kw.items() if v is not None}
+        kw = {k: float(v.replace(',', '.')) for k, v in kw.items() if v is not None}
+        days = datetime.timedelta(kw.pop('days', .0) or .0)
         return days + sign * datetime.timedelta(**kw)

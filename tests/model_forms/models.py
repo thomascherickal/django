@@ -28,8 +28,17 @@ class Category(models.Model):
         return self.__str__()
 
 
+class WriterManager(models.Manager):
+    def get_queryset(self):
+        qs = super().get_queryset()
+        return qs.filter(archived=False)
+
+
 class Writer(models.Model):
     name = models.CharField(max_length=50, help_text='Use both first and last names.')
+    archived = models.BooleanField(default=False, editable=False)
+
+    objects = WriterManager()
 
     class Meta:
         ordering = ('name',)
@@ -393,6 +402,9 @@ class Character(models.Model):
     username = models.CharField(max_length=100)
     last_action = models.DateTimeField()
 
+    def __str__(self):
+        return self.username
+
 
 class StumpJoke(models.Model):
     most_recently_fooled = models.ForeignKey(
@@ -460,3 +472,6 @@ class Award(models.Model):
 
 class NullableUniqueCharFieldModel(models.Model):
     codename = models.CharField(max_length=50, blank=True, null=True, unique=True)
+    email = models.EmailField(blank=True, null=True)
+    slug = models.SlugField(blank=True, null=True)
+    url = models.URLField(blank=True, null=True)

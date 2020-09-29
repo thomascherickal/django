@@ -136,10 +136,20 @@ class SyndicationFeedTest(FeedTestCase):
             'guid': 'http://example.com/blog/1/',
             'pubDate': pub_date,
             'author': 'test@example.com (Sally Smith)',
+            'comments': '/blog/1/comments',
         })
         self.assertCategories(items[0], ['python', 'testing'])
         for item in items:
-            self.assertChildNodes(item, ['title', 'link', 'description', 'guid', 'category', 'pubDate', 'author'])
+            self.assertChildNodes(item, [
+                'title',
+                'link',
+                'description',
+                'guid',
+                'category',
+                'pubDate',
+                'author',
+                'comments',
+            ])
             # Assert that <guid> does not have any 'isPermaLink' attribute
             self.assertIsNone(item.getElementsByTagName(
                 'guid')[0].attributes.get('isPermaLink'))
@@ -411,14 +421,14 @@ class SyndicationFeedTest(FeedTestCase):
         Tests the Last-Modified header with naive publication dates.
         """
         response = self.client.get('/syndication/naive-dates/')
-        self.assertEqual(response['Last-Modified'], 'Tue, 26 Mar 2013 01:00:00 GMT')
+        self.assertEqual(response.headers['Last-Modified'], 'Tue, 26 Mar 2013 01:00:00 GMT')
 
     def test_feed_last_modified_time(self):
         """
         Tests the Last-Modified header with aware publication dates.
         """
         response = self.client.get('/syndication/aware-dates/')
-        self.assertEqual(response['Last-Modified'], 'Mon, 25 Mar 2013 19:18:00 GMT')
+        self.assertEqual(response.headers['Last-Modified'], 'Mon, 25 Mar 2013 19:18:00 GMT')
 
         # No last-modified when feed has no item_pubdate
         response = self.client.get('/syndication/no_pubdate/')

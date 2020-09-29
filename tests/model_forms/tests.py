@@ -5,10 +5,9 @@ from unittest import mock, skipUnless
 
 from django import forms
 from django.core.exceptions import (
-    NON_FIELD_ERRORS, FieldError, ImproperlyConfigured,
+    NON_FIELD_ERRORS, FieldError, ImproperlyConfigured, ValidationError,
 )
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.core.validators import ValidationError
 from django.db import connection, models
 from django.db.models.query import EmptyQuerySet
 from django.forms.models import (
@@ -31,7 +30,7 @@ from .models import (
 )
 
 if test_images:
-    from .models import ImageFile, OptionalImageFile, NoExtensionImageFile
+    from .models import ImageFile, NoExtensionImageFile, OptionalImageFile
 
     class ImageFileForm(forms.ModelForm):
         class Meta:
@@ -259,6 +258,37 @@ class ModelFormBaseTest(TestCase):
         award = form.save()
         self.assertIsNone(award.character)
 
+    def test_blank_foreign_key_with_radio(self):
+        class BookForm(forms.ModelForm):
+            class Meta:
+                model = Book
+                fields = ['author']
+                widgets = {'author': forms.RadioSelect()}
+
+        writer = Writer.objects.create(name='Joe Doe')
+        form = BookForm()
+        self.assertEqual(list(form.fields['author'].choices), [
+            ('', '---------'),
+            (writer.pk, 'Joe Doe'),
+        ])
+
+    def test_non_blank_foreign_key_with_radio(self):
+        class AwardForm(forms.ModelForm):
+            class Meta:
+                model = Award
+                fields = ['character']
+                widgets = {'character': forms.RadioSelect()}
+
+        character = Character.objects.create(
+            username='user',
+            last_action=datetime.datetime.today(),
+        )
+        form = AwardForm()
+        self.assertEqual(
+            list(form.fields['character'].choices),
+            [(character.pk, 'user')],
+        )
+
     def test_save_blank_false_with_required_false(self):
         """
         A ModelForm with a model with a field set to blank=False and the form
@@ -271,19 +301,30 @@ class ModelFormBaseTest(TestCase):
         self.assertEqual(obj.name, '')
 
     def test_save_blank_null_unique_charfield_saves_null(self):
-        form_class = modelform_factory(model=NullableUniqueCharFieldModel, fields=['codename'])
+        form_class = modelform_factory(model=NullableUniqueCharFieldModel, fields='__all__')
         empty_value = '' if connection.features.interprets_empty_strings_as_nulls else None
-
-        form = form_class(data={'codename': ''})
+        data = {
+            'codename': '',
+            'email': '',
+            'slug': '',
+            'url': '',
+        }
+        form = form_class(data=data)
         self.assertTrue(form.is_valid())
         form.save()
         self.assertEqual(form.instance.codename, empty_value)
+        self.assertEqual(form.instance.email, empty_value)
+        self.assertEqual(form.instance.slug, empty_value)
+        self.assertEqual(form.instance.url, empty_value)
 
         # Save a second form to verify there isn't a unique constraint violation.
-        form = form_class(data={'codename': ''})
+        form = form_class(data=data)
         self.assertTrue(form.is_valid())
         form.save()
         self.assertEqual(form.instance.codename, empty_value)
+        self.assertEqual(form.instance.email, empty_value)
+        self.assertEqual(form.instance.slug, empty_value)
+        self.assertEqual(form.instance.url, empty_value)
 
     def test_missing_fields_attribute(self):
         message = (
@@ -843,15 +884,15 @@ class IncompleteCategoryFormWithExclude(forms.ModelForm):
 class ValidationTest(SimpleTestCase):
     def test_validates_with_replaced_field_not_specified(self):
         form = IncompleteCategoryFormWithFields(data={'name': 'some name', 'slug': 'some-slug'})
-        assert form.is_valid()
+        self.assertIs(form.is_valid(), True)
 
     def test_validates_with_replaced_field_excluded(self):
         form = IncompleteCategoryFormWithExclude(data={'name': 'some name', 'slug': 'some-slug'})
-        assert form.is_valid()
+        self.assertIs(form.is_valid(), True)
 
     def test_notrequired_overrides_notblank(self):
         form = CustomWriterForm({})
-        assert form.is_valid()
+        self.assertIs(form.is_valid(), True)
 
 
 class UniqueTest(TestCase):
@@ -1614,6 +1655,52 @@ class ModelFormBasicTests(TestCase):
         obj.name = 'Alice'
         obj.full_clean()
 
+    def test_validate_foreign_key_uses_default_manager(self):
+        class MyForm(forms.ModelForm):
+            class Meta:
+                model = Article
+                fields = '__all__'
+
+        # Archived writers are filtered out by the default manager.
+        w = Writer.objects.create(name='Randy', archived=True)
+        data = {
+            'headline': 'My Article',
+            'slug': 'my-article',
+            'pub_date': datetime.date.today(),
+            'writer': w.pk,
+            'article': 'lorem ipsum',
+        }
+        form = MyForm(data)
+        self.assertIs(form.is_valid(), False)
+        self.assertEqual(
+            form.errors,
+            {'writer': ['Select a valid choice. That choice is not one of the available choices.']},
+        )
+
+    def test_validate_foreign_key_to_model_with_overridden_manager(self):
+        class MyForm(forms.ModelForm):
+            class Meta:
+                model = Article
+                fields = '__all__'
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                # Allow archived authors.
+                self.fields['writer'].queryset = Writer._base_manager.all()
+
+        w = Writer.objects.create(name='Randy', archived=True)
+        data = {
+            'headline': 'My Article',
+            'slug': 'my-article',
+            'pub_date': datetime.date.today(),
+            'writer': w.pk,
+            'article': 'lorem ipsum',
+        }
+        form = MyForm(data)
+        self.assertIs(form.is_valid(), True)
+        article = form.save()
+        self.assertEqual(article.writer, w)
+
 
 class ModelMultipleChoiceFieldTests(TestCase):
     @classmethod
@@ -1787,11 +1874,11 @@ class ModelMultipleChoiceFieldTests(TestCase):
             self.assertTrue(form.has_changed())
 
     def test_clean_does_deduplicate_values(self):
-        class WriterForm(forms.Form):
-            persons = forms.ModelMultipleChoiceField(queryset=Writer.objects.all())
+        class PersonForm(forms.Form):
+            persons = forms.ModelMultipleChoiceField(queryset=Person.objects.all())
 
-        person1 = Writer.objects.create(name="Person 1")
-        form = WriterForm(data={})
+        person1 = Person.objects.create(name='Person 1')
+        form = PersonForm(data={})
         queryset = form.fields['persons'].clean([str(person1.pk)] * 50)
         sql, params = queryset.query.sql_with_params()
         self.assertEqual(len(params), 1)
@@ -2386,7 +2473,7 @@ class OtherModelFormTests(TestCase):
         self.assertHTMLEqual(
             str(f.media),
             '''<link href="/some/form/css" type="text/css" media="all" rel="stylesheet">
-<script type="text/javascript" src="/some/form/javascript"></script>'''
+<script src="/some/form/javascript"></script>'''
         )
 
     def test_choices_type(self):
@@ -2588,7 +2675,7 @@ class CustomCleanTests(TestCase):
 
             def clean(self):
                 if not self.cleaned_data['left'] == self.cleaned_data['right']:
-                    raise forms.ValidationError('Left and right should be equal')
+                    raise ValidationError('Left and right should be equal')
                 return self.cleaned_data
 
         form = TripleFormWithCleanOverride({'left': 1, 'middle': 2, 'right': 1})
